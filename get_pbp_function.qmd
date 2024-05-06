@@ -1,0 +1,381 @@
+---
+title: "Get PWHL Play-By-Play Data"
+format: html
+editor: visual
+---
+
+## Introduction
+
+This document provides a function for getting the play-by-play data for a specified PWHL game. **The function does not return all of the data available through the PWHL's API, and it adds variables that are not included in the source data**. You can take this function and modify it to fit your own needs.
+
+Unfortunately, the data available through the PWHL's API are not consistent. This function seems to work OK starting at game_id = 28 but there could be other inconsistencies that I have not found. If you find a glitch please let me know about it :)
+
+## Basic Setup
+
+```{r, message=FALSE}
+
+#install.packages("tidyverse")
+#install.packages("jsonlite")
+#install.packages("httr")
+
+library(tidyverse)
+library(jsonlite)
+library(httr)
+
+```
+
+## Function: Get Play-By-Play Data
+
+This function gets the play-by-play data for a specified PWHL game_id. The data are pulled from the PWHL's API. The function includes explanatory comments (accompanied by a hashtag "\#").
+
+A preview of the data returned by the function is provided below under the heading "Example Data".
+
+Here's the function.
+
+```{r}
+
+get_pbp_data <- function(game_id) {
+        
+        #game_id <- 63
+        
+        # Get basic game data
+        
+        url_1 <- paste0("https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=gameSummary&game_id=", game_id ,"&key=694cfeed58c932ee&site_id=2&client_code=pwhl&lang=en&league_id=&callback=angular.callbacks._6")
+        
+        game_data <- GET(url_1) |>
+                content("text",
+                        encoding = "UTF-8") %>%
+                sub("angular.callbacks._6(", "", ., fixed = TRUE) %>%
+                sub(")$", "", .) |>
+                fromJSON(flatten = TRUE)
+        
+        date <- game_data[["details"]][["GameDateISO8601"]]
+        home_team_id <- game_data[["homeTeam"]][["info"]][["id"]]
+        home_team <- game_data[["homeTeam"]][["info"]][["abbreviation"]]
+        away_team_id <- game_data[["visitingTeam"]][["info"]][["id"]]
+        away_team <- game_data[["visitingTeam"]][["info"]][["abbreviation"]]
+        
+        # Get the raw pbp data
+        
+        url_2 <- paste0("https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=gameCenterPlayByPlay&game_id=", game_id ,"&key=694cfeed58c932ee&client_code=pwhl&lang=en&league_id=&callback=angular.callbacks._8")
+        
+        raw_data <- GET(url_2) |>
+                content("text",
+                        encoding = "UTF-8") %>%
+                sub("angular.callbacks._8(", "", ., fixed = TRUE) %>%
+                sub(")$", "", .) |>
+                fromJSON(flatten = TRUE)
+        
+        # Unnest the data
+        
+        pbp_data <- raw_data |>
+                unnest_wider(details.assists) |>
+                unnest_wider(id,
+                             names_sep = "_") |>
+                unnest_wider(firstName,
+                             names_sep = "_") |>
+                unnest_wider(lastName,
+                             names_sep = "_") |>
+                unnest_wider(jerseyNumber,
+                             names_sep = "_") |>
+                unnest_wider(position,
+                             names_sep = "_") |>
+                unnest_wider(birthDate,
+                             names_sep = "_") |>
+                unnest_wider(playerImageURL,
+                             names_sep = "_") |>
+                unnest_wider(details.assistNumbers,
+                             names_sep = "_") |>
+                unnest_wider(details.plus_players,
+                             names_sep = "_") |>
+                unnest_wider(details.plus_players_id,
+                             names_sep = "_") |>
+                unnest_wider(details.plus_players_firstName,
+                             names_sep = "_") |>
+                unnest_wider(details.plus_players_lastName,
+                             names_sep = "_") |>
+                unnest_wider(details.plus_players_jerseyNumber,
+                             names_sep = "_") |>
+                unnest_wider(details.plus_players_position,
+                             names_sep = "_") |>
+                unnest_wider(details.plus_players_birthDate,
+                             names_sep = "_") |>
+                unnest_wider(details.plus_players_playerImageURL,
+                             names_sep = "_") |>
+                unnest_wider(details.minus_players,
+                             names_sep = "_") |>
+                unnest_wider(details.minus_players_id,
+                             names_sep = "_") |>
+                unnest_wider(details.minus_players_firstName,
+                             names_sep = "_") |>
+                unnest_wider(details.minus_players_lastName,
+                             names_sep = "_") |>
+                unnest_wider(details.minus_players_jerseyNumber,
+                             names_sep = "_") |>
+                unnest_wider(details.minus_players_position,
+                             names_sep = "_") |>
+                unnest_wider(details.minus_players_birthDate,
+                             names_sep = "_") |>
+                unnest_wider(details.minus_players_playerImageURL,
+                             names_sep = "_")
+        
+        # Add basic game data to play-by-play data
+        
+        pbp_data <- pbp_data |>
+                mutate(game_id = game_id,
+                       date = date,
+                       home_team_id = home_team_id,
+                       home_team = home_team,
+                       away_team_id = away_team_id,
+                       away_team = away_team)
+        
+        # Convert date to proper date format
+        
+        pbp_data$date <- as_date(pbp_data$date)
+        
+        # Convert period time to seconds and add a game clock
+        
+        pbp_data <- pbp_data |>
+                separate_wider_delim(cols = details.time,
+                                     delim = ":",
+                                     names = c("min", "sec"))
+        pbp_data$min <- as.numeric(pbp_data$min)
+        pbp_data$sec <- as.numeric(pbp_data$sec)
+        pbp_data$details.period.id <- as.integer(pbp_data$details.period.id)
+        pbp_data <- pbp_data |>
+                mutate(period_seconds = (min * 60) + sec,
+                       .after = sec) |>
+                mutate(game_seconds = case_when(
+                        details.period.id == 1 ~ period_seconds,
+                        details.period.id == 2 ~ period_seconds + 1200,
+                        details.period.id == 3 ~ period_seconds + 2400,
+                        details.period.id == 4 ~ period_seconds + 3600,
+                        TRUE ~ NA),
+                       .after = period_seconds) |>
+                select(-min, -sec)
+        pbp_data$period_seconds <- as.integer(pbp_data$period_seconds)
+        pbp_data$game_seconds <- as.integer(pbp_data$game_seconds)
+        
+        # Remove "details." from column names
+        
+        names(pbp_data) = gsub(pattern = "details.", replacement = "", x = names(pbp_data))
+        
+        # Remove the goalie_change events
+        
+        pbp_data <- pbp_data |>
+                filter(event != "goalie_change")
+        
+        # Tidy the assists data
+        
+        pbp_data <- pbp_data |>
+                rename(primary_assist_id = id_1,
+                       secondary_assist_id = id_2) |>
+                mutate(primary_assist_player = paste(firstName_1, lastName_1),
+                       secondary_assist_player = paste(firstName_2, lastName_2)) |>
+                mutate(primary_assist_player = if_else(primary_assist_player == "NA NA", NA, primary_assist_player)) |>
+                mutate(secondary_assist_player = if_else(secondary_assist_player == "NA NA", NA, secondary_assist_player))
+        
+        # Consolidate player_ids across events
+        
+        pbp_data <- pbp_data |>
+                mutate(event_player_id = case_when(
+                        event == "faceoff" & homeWin == 1 ~ homePlayer.id,
+                        event == "faceoff" & homeWin == 0 ~ visitingPlayer.id,
+                        event == "hit" ~ player.id,
+                        event == "shot" ~ shooter.id,
+                        event == "blocked_shot" ~ blocker.id,
+                        event == "goal" ~ scoredBy.id,
+                        event == "penalty" ~ takenBy.id)) 
+        
+        # Add goal scorer to shooter_id
+        
+        pbp_data <- pbp_data |>
+                mutate(shooter_id = case_when(
+                        event == "shot" | event == "blocked_shot" ~ shooter.id,
+                        event == "goal" ~ scoredBy.id,
+                        TRUE ~ NA))
+        
+        # Add faceoff loser player_id
+        
+        pbp_data <- pbp_data |>
+                mutate(faceoff_loser_id = case_when(
+                        event == "faceoff" & homeWin == 0 ~ homePlayer.id,
+                        event == "faceoff" & homeWin == 1 ~ visitingPlayer.id,
+                        TRUE ~ NA))
+        
+        # Consolidate player names across events
+        
+        pbp_data <- pbp_data |>
+                mutate(event_player = case_when(
+                        event == "faceoff" & homeWin == 1 ~ paste(homePlayer.firstName, homePlayer.lastName),
+                        event == "faceoff" & homeWin == 0 ~ paste(visitingPlayer.firstName, visitingPlayer.lastName),
+                        event == "hit" ~ paste(player.firstName, player.lastName),
+                        event == "shot" ~ paste(shooter.firstName, shooter.lastName),
+                        event == "blocked_shot" ~ paste(blocker.firstName, blocker.lastName),
+                        event == "goal" ~ paste(scoredBy.firstName, scoredBy.lastName),
+                        event == "penalty" ~ paste(takenBy.firstName, takenBy.lastName))) 
+        
+        # Add goal scorers to shooters
+        
+        pbp_data <- pbp_data |>
+                mutate(shooter = case_when(
+                        event == "shot" | event == "blocked_shot" ~ paste(shooter.firstName, shooter.lastName),
+                        event == "goal" ~ paste(scoredBy.firstName, scoredBy.lastName),
+                        TRUE ~ NA))
+        
+        # Add faceoff losers
+        
+        pbp_data <- pbp_data |>
+                mutate(faceoff_loser = case_when(
+                        event == "faceoff" & homeWin == 0 ~ paste(homePlayer.firstName, homePlayer.lastName),
+                        event == "faceoff" & homeWin == 1 ~ paste(visitingPlayer.firstName, visitingPlayer.lastName),
+                        TRUE ~ NA))
+        
+        # Tidy the goalies
+        
+        pbp_data <- pbp_data |>
+                mutate(goalie = paste(goalie.firstName, goalie.lastName)) |>
+                mutate(goalie = if_else(goalie == "NA NA", NA, goalie))
+        
+        # Add event teams
+        
+        pbp_data <- pbp_data |>
+                mutate(event_team_id = case_when(
+                        event == "faceoff" & homeWin == 1 ~ home_team_id,
+                        event == "faceoff" & homeWin == 0 ~ away_team_id,
+                        event == "hit" ~ as.integer(teamId),
+                        event == "shot" ~ as.integer(shooterTeamId),
+                        event == "blocked_shot" & shooterTeamId == home_team_id ~ away_team_id,
+                        event == "blocked_shot" & shooterTeamId == away_team_id ~ home_team_id,
+                        event == "goal" ~ as.integer(team.id),
+                        event == "penalty" ~ as.integer(againstTeam.id)))
+        
+        pbp_data$event_team_id <- as.integer(pbp_data$event_team_id)
+        
+        # Convert penalty minutes to integer
+        
+        pbp_data$minutes <- as.integer(pbp_data$minutes)
+        
+        # Get plus/minus (on-ice) data
+        
+        pm_data <- pbp_data |>
+                select(starts_with("plus_players_id") | starts_with("minus_players_id"))
+        
+        # Shrink the data
+        
+        pbp_data <- pbp_data |>
+                mutate(game_id = as.integer(game_id)) |>
+                select(game_id,
+                       date,
+                       home_team_id,
+                       home_team,
+                       away_team_id,
+                       away_team,
+                       period = period.id,
+                       period_seconds,
+                       game_seconds,
+                       event,
+                       event_team_id,
+                       event_player_id,
+                       event_player,
+                       x_location = xLocation,
+                       y_location = yLocation,
+                       is_goal = isGoal,
+                       goal_is_pp = properties.isPowerPlay,
+                       goal_is_sh = properties.isShortHanded,
+                       goal_is_en = properties.isEmptyNet,
+                       goal_is_ps = properties.isPenaltyShot,
+                       shot_type = shotType,
+                       shot_quality = shotQuality,
+                       primary_assist_id,
+                       primary_assist_player,
+                       secondary_assist_id,
+                       secondary_assist_player,
+                       goalie_id = goalie.id,
+                       goalie,
+                       shooter_id,
+                       shooter,
+                       faceoff_loser_id,
+                       faceoff_loser,
+                       penalty_minutes = minutes,
+                       penalty_description = description,
+                       is_power_play = isPowerPlay,
+                       is_bench = isBench)
+        
+        # Join plus/minus (on-ice) data
+        
+        pbp_data <- pbp_data |>
+                bind_cols(pm_data)
+        
+        # Convert goal descriptions to logicals
+        
+        pbp_data$goal_is_pp <- if_else(pbp_data$goal_is_pp == 1, TRUE, FALSE)
+        pbp_data$goal_is_sh <- if_else(pbp_data$goal_is_sh == 1, TRUE, FALSE)
+        pbp_data$goal_is_en <- if_else(pbp_data$goal_is_en == 1, TRUE, FALSE)
+        pbp_data$goal_is_ps <- if_else(pbp_data$goal_is_ps == 1, TRUE, FALSE)
+        # Add event team abbreviation
+        
+        pbp_data <- pbp_data |>
+                mutate(event_team = if_else(event_team_id == home_team_id, home_team, away_team),
+                       .after = event_team_id)
+        
+        return(pbp_data)
+        
+}
+
+```
+
+## Example Data
+
+The function returns a tibble with 47 variables. The variables (and their data types) are displayed here.
+
+```{r}
+
+example_data <- get_pbp_data(73) 
+
+example_data |>
+        str()
+
+```
+
+### Note About X\|Y Locations
+
+The x_location and y_location variables have not been modified from the original. The data points for these variables are on the following scales:
+
+-   x = 0 - 600; and
+
+-   y = 0 - 150.
+
+The data points are "fixed" such that the same team is always "shooting to the left" or "shooting to the right" (example shown below under the heading "Example Shot Plot"). It is worth noting that the 2:1 axis ratio does not reflect the dimensions of a normal hockey rink.
+
+### Note About "Plus" And "Minus" Players
+
+The data include "plus" and "minus" players for each goal. The labels "plus" and "minus" appear in the source data. I kept those labels, but it might be helpful to think of the data as "on-ice" data rather than "plus/minus" data. A power play goal has "plus" and "minus" players.
+
+## Example Shot Plot
+
+```{r, echo=FALSE}
+
+#rink_url <- "https://lscluster.hockeytech.com/statview/img/ht-ice-rink.svg"
+
+example_data |> 
+        filter(event == "shot") |>
+        ggplot() +
+        geom_point(aes(x = x_location,
+                       y = y_location,
+                       colour = event_team),
+                   size = 4) +
+        xlim(0, 600) +
+        ylim(0, 300) +
+        theme_minimal() +
+        theme(plot.title.position = "plot",
+              plot.title = element_text(size = 16),
+              plot.subtitle = element_text(size = 12),
+              axis.title = element_blank(),
+              panel.grid = element_blank(),
+              legend.title = element_blank()) +
+        labs(title = "Way Too Simple Plot That Shows Shot Locations",
+             subtitle = "X = 0 - 600  |  Y = 0 - 300") +
+        scale_color_viridis_d()
+
+```
