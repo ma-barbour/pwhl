@@ -1,0 +1,200 @@
+---
+title: "Shot Location Function"
+format: html
+editor: visual
+---
+
+## Load Sample PBP Data
+
+Load some random play-by-play data using my get_pbp_function (available on GitHub).
+
+This code chunk assumes the get_pbp_function is already saved in the working directory as "pbp_function.rds".
+
+```{r}
+
+#install.packages("tidyverse")
+
+library(tidyverse)
+
+get_pbp <- read_rds("pbp_function.rds")
+
+pbp_data <- get_pbp(runif(n = 1,
+                          min = 28,
+                          max = 72))
+
+```
+
+## Adjust Shot Location And Add Shot Details
+
+This function takes the x\|y location data provided by the PWHL and adjusts them to reflect the dimensions of a "standard" North American rink (200 x 85, with center ice located at 0,0). After the adjustment, the units on both axes represent distance in feet.
+
+Next, the function adds the distance and angle of each shot (from the middle of the net).
+
+The function returns a tibble with updated play-by-play data.
+
+```{r}
+
+location_adjustment <- function(pbp_data) {
+        
+        # Adjust x|y
+        
+        pbp_data <- pbp_data |>
+                mutate(x_location = (x_location - 300) * 0.3333,
+                       y_location = (y_location - 150) * 0.2833)
+        
+        # Add the distance of each shot
+        
+        find_sides <- pbp_data |>
+                group_by(event_team) |>
+                summarize(median_shot = round(median(x_location,
+                                                     na.rm = TRUE), 1),
+                          .groups = "drop") 
+        
+        pbp_data <- pbp_data |>
+                left_join(find_sides, by = "event_team")
+        
+        pbp_data <- pbp_data |>
+                mutate(distance = case_when(
+                        median_shot > 0 & event == "shot" ~ round(abs(sqrt((x_location - 89)^2 + (y_location)^2)), 1),
+                        median_shot < 0 & event == "shot" ~ round(abs(sqrt((x_location - (-89))^2 + (y_location)^2)), 1)),
+                       .after = y_location)
+        
+        # Add the angle of each shot
+        
+        pbp_data <- pbp_data |>
+                mutate(angle = case_when(
+                        median_shot > 0 & event == "shot" ~ round(abs(atan((0-y_location) / (89-x_location)) * (180 / pi)), 1),
+                        median_shot < 0 & event == "shot" ~ round(abs(atan((0-y_location) / (-89-x_location)) * (180 / pi)), 1)),
+                       .after = distance) |>
+                mutate(angle = ifelse((median_shot > 0 & x_location > 89) | (median_shot < 0 & x_location < -89), 180 - angle, angle))
+        
+        pbp_data <- pbp_data |>
+                select(-median_shot)
+        
+        return(pbp_data)
+        
+}
+
+#write_rds(location_adjustment, "location_function.rds")
+
+```
+
+## Plot Showing Shot Distance
+
+Here's a plot to check if the results for the distance adjustment seem reasonable.
+
+Show in new window to see more detail.
+
+```{r, warning=FALSE}
+
+pbp_data |>
+        location_adjustment() |>
+        filter(event == "shot") |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_text(aes(label = distance,
+                      colour = event_team)) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Distance") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              legend.position = "none",
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18)) +
+        scale_colour_viridis_d()
+
+```
+
+## Plot Showing Shot Angle
+
+Here's a plot to check if the results for the angle adjustment seem reasonable.
+
+Show in new window to see more detail.
+
+```{r, warning=FALSE}
+
+pbp_data |>
+        location_adjustment() |>
+        filter(event == "shot") |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_text(aes(label = angle,
+                      colour = event_team))+
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Angle") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              legend.position = "none",
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18)) +
+        scale_colour_viridis_d() 
+
+```
