@@ -36,7 +36,7 @@ Here's the function.
 
 get_pbp_data <- function(game_id) {
         
-        #game_id <- 63
+        game_id <- 55
         
         # Get basic game data
         
@@ -133,7 +133,15 @@ get_pbp_data <- function(game_id) {
         
         pbp_data$date <- as_date(pbp_data$date)
         
-        # Convert period time to seconds and add a game clock
+        # Tidy period_ids (fix OT and shootout data)
+        
+        pbp_data <- pbp_data |>
+                mutate(details.period.id = if_else(event == "shootout", "5", details.period.id)) |>
+                mutate(details.period.id = if_else(details.period.id == "OT1", "4", details.period.id))
+        
+        pbp_data$details.period.id <- as.integer(pbp_data$details.period.id)
+        
+        # Convert period time to seconds and add game clock
         
         pbp_data <- pbp_data |>
                 separate_wider_delim(cols = details.time,
@@ -141,7 +149,7 @@ get_pbp_data <- function(game_id) {
                                      names = c("min", "sec"))
         pbp_data$min <- as.numeric(pbp_data$min)
         pbp_data$sec <- as.numeric(pbp_data$sec)
-        pbp_data$details.period.id <- as.integer(pbp_data$details.period.id)
+        
         pbp_data <- pbp_data |>
                 mutate(period_seconds = (min * 60) + sec,
                        .after = sec) |>
