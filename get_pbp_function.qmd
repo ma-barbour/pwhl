@@ -265,42 +265,62 @@ get_pbp_data <- function(game_id) {
         
         pbp_data <- pbp_data |>
                 mutate(game_id = as.integer(game_id)) |>
-                select(game_id,
-                       date,
-                       home_team_id,
-                       home_team,
-                       away_team_id,
-                       away_team,
-                       period = period.id,
-                       period_seconds,
-                       game_seconds,
-                       event,
-                       event_team_id,
-                       event_player_id,
-                       event_player,
-                       x_location = xLocation,
-                       y_location = yLocation,
-                       is_goal = isGoal,
-                       goal_is_pp = properties.isPowerPlay,
-                       goal_is_sh = properties.isShortHanded,
-                       goal_is_en = properties.isEmptyNet,
-                       goal_is_ps = properties.isPenaltyShot,
-                       shot_type = shotType,
-                       shot_quality = shotQuality,
-                       primary_assist_id,
-                       primary_assist_player,
-                       secondary_assist_id,
-                       secondary_assist_player,
-                       goalie_id = goalie.id,
-                       goalie,
-                       shooter_id,
-                       shooter,
-                       faceoff_loser_id,
-                       faceoff_loser,
-                       penalty_minutes = minutes,
-                       penalty_description = description,
-                       is_power_play = isPowerPlay,
-                       is_bench = isBench)
+                select(any_of(c("game_id",
+                                "date",
+                                "home_team_id",
+                                "home_team",
+                                "away_team_id",
+                                "away_team",
+                                "period.id",
+                                "period_seconds",
+                                "game_seconds",
+                                "event",
+                                "event_team_id",
+                                "event_player_id",
+                                "event_player",
+                                "xLocation",
+                                "yLocation",
+                                "isGoal",
+                                "properties.isPowerPlay",
+                                "properties.isShortHanded",
+                                "properties.isEmptyNet",
+                                "properties.isPenaltyShot",
+                                "shotType",
+                                "shotQuality",
+                                "primary_assist_id",
+                                "primary_assist_player",
+                                "secondary_assist_id",
+                                "secondary_assist_player",
+                                "goalie.id",
+                                "goalie",
+                                "shooter_id",
+                                "shooter",
+                                "faceoff_loser_id",
+                                "faceoff_loser",
+                                "minutes",
+                                "description",
+                                "isPowerPlay",
+                                "isBench")))
+        
+        # Rename some columns
+        
+        col_names <- c(period = "period.id",
+                       x_location = "xLocation",
+                       y_location = "yLocation",
+                       is_goal = "isGoal",
+                       goal_is_pp = "properties.isPowerPlay",
+                       goal_is_sh = "properties.isShortHanded",
+                       goal_is_en = "properties.isEmptyNet",
+                       goal_is_ps = "properties.isPenaltyShot",
+                       shot_type = "shotType",
+                       shot_quality = "shotQuality",
+                       goalie_id = "goalie.id",
+                       penalty_minutes = "minutes",
+                       penalty_description = "description",
+                       is_power_play = "isPowerPlay",
+                       is_bench = "isBench")
+        
+        pbp_data <- rename(pbp_data, any_of(col_names))
         
         # Join plus/minus (on-ice) data
         
@@ -327,11 +347,11 @@ get_pbp_data <- function(game_id) {
 
 ## Example Data
 
-The function returns a tibble with 47 variables. The variables (and their data types) are displayed here.
+The function returns a tibble that (usually) has 47 variables. The variables (and their data types) are displayed here.
 
 ```{r}
 
-example_data <- get_pbp_data(73) 
+example_data <- get_pbp_data(28) 
 
 example_data |>
         str()
@@ -374,8 +394,11 @@ example_data |>
               axis.title = element_blank(),
               panel.grid = element_blank(),
               legend.title = element_blank()) +
+        coord_fixed() +
         labs(title = "Way Too Simple Plot That Shows Shot Locations",
              subtitle = "X = 0 - 600  |  Y = 0 - 300") +
         scale_color_viridis_d()
 
 ```
+
+## 
