@@ -1,1 +1,1 @@
-Functions for accessing the PWHL's API.
+Functions for accessing and using the PWHL's API.
