@@ -36,8 +36,6 @@ Here's the function.
 
 get_pbp_data <- function(game_id) {
         
-        #game_id <- 55
-        
         # Get basic game data
         
         url_1 <- paste0("https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=gameSummary&game_id=", game_id ,"&key=694cfeed58c932ee&site_id=2&client_code=pwhl&lang=en&league_id=&callback=angular.callbacks._6")
@@ -175,6 +173,8 @@ get_pbp_data <- function(game_id) {
         
         # Tidy the assists data
         
+        if ("id_2" %in% colnames(pbp_data) == TRUE) {
+        
         pbp_data <- pbp_data |>
                 rename(primary_assist_id = id_1,
                        secondary_assist_id = id_2) |>
@@ -183,6 +183,15 @@ get_pbp_data <- function(game_id) {
                 mutate(primary_assist_player = if_else(primary_assist_player == "NA NA", NA, primary_assist_player)) |>
                 mutate(secondary_assist_player = if_else(secondary_assist_player == "NA NA", NA, secondary_assist_player))
         
+        } else {
+                
+        pbp_data <- pbp_data |>
+                rename(primary_assist_id = id_1) |>
+                mutate(primary_assist_player = paste(firstName_1, lastName_1)) |>
+                mutate(primary_assist_player = if_else(primary_assist_player == "NA NA", NA, primary_assist_player)) 
+                
+        }
+
         # Consolidate player_ids across events
         
         pbp_data <- pbp_data |>
