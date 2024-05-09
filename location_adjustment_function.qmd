@@ -51,6 +51,7 @@ location_adjustment <- function(pbp_data) {
         # Add the distance of each shot
         
         find_sides <- pbp_data |>
+                filter(event == "shot") |>
                 group_by(event_team) |>
                 summarize(mean_shot = mean(x_location,
                                                na.rm = TRUE),
