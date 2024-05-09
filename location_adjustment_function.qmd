@@ -1,5 +1,5 @@
 ---
-title: "Shot Location Function"
+title: "Location And Shot Details Function"
 format: html
 editor: visual
 ---
@@ -13,8 +13,12 @@ This code chunk assumes the get_pbp_function is already saved in the working dir
 ```{r}
 
 #install.packages("tidyverse")
+#install.packages("jsonlite")
+#install.packages("httr")
 
 library(tidyverse)
+library(jsonlite)
+library(httr)
 
 get_pbp <- read_rds("pbp_function.rds")
 
@@ -24,11 +28,13 @@ pbp_data <- get_pbp(runif(n = 1,
 
 ```
 
-## Adjust Shot Location And Add Shot Details
+## Adjust Axes And Add Shot Details
 
-This function takes the x\|y location data provided by the PWHL and adjusts them to reflect the dimensions of a "standard" North American rink (200 x 85, with center ice located at 0,0). After the adjustment, the units on both axes represent distance in feet.
+This function takes the x\|y location data provided by the PWHL and adjusts them to reflect the dimensions of a "standard" North American rink (200 x 85, **with center ice located at 0,0**). After the adjustment, the units on both axes represent distance in feet.
 
 Next, the function adds the distance and angle of each shot (from the middle of the net).
+
+Finally, the function adds a rebound logical variable (shot within 3 seconds of previous shot).
 
 The function returns a tibble with updated play-by-play data.
 
@@ -46,8 +52,8 @@ location_adjustment <- function(pbp_data) {
         
         find_sides <- pbp_data |>
                 group_by(event_team) |>
-                summarize(median_shot = round(median(x_location,
-                                                     na.rm = TRUE), 1),
+                summarize(mean_shot = mean(x_location,
+                                               na.rm = TRUE),
                           .groups = "drop") 
         
         pbp_data <- pbp_data |>
@@ -55,21 +61,27 @@ location_adjustment <- function(pbp_data) {
         
         pbp_data <- pbp_data |>
                 mutate(distance = case_when(
-                        median_shot > 0 & event == "shot" ~ round(abs(sqrt((x_location - 89)^2 + (y_location)^2)), 1),
-                        median_shot < 0 & event == "shot" ~ round(abs(sqrt((x_location - (-89))^2 + (y_location)^2)), 1)),
+                        mean_shot > 0 & event == "shot" ~ round(abs(sqrt((x_location - 89)^2 + (y_location)^2)), 1),
+                        mean_shot < 0 & event == "shot" ~ round(abs(sqrt((x_location - (-89))^2 + (y_location)^2)), 1)),
                        .after = y_location)
         
         # Add the angle of each shot
         
         pbp_data <- pbp_data |>
                 mutate(angle = case_when(
-                        median_shot > 0 & event == "shot" ~ round(abs(atan((0-y_location) / (89-x_location)) * (180 / pi)), 1),
-                        median_shot < 0 & event == "shot" ~ round(abs(atan((0-y_location) / (-89-x_location)) * (180 / pi)), 1)),
+                        mean_shot > 0 & event == "shot" ~ round(abs(atan((0-y_location) / (89-x_location)) * (180 / pi)), 1),
+                        mean_shot < 0 & event == "shot" ~ round(abs(atan((0-y_location) / (-89-x_location)) * (180 / pi)), 1)),
                        .after = distance) |>
-                mutate(angle = ifelse((median_shot > 0 & x_location > 89) | (median_shot < 0 & x_location < -89), 180 - angle, angle))
+                mutate(angle = ifelse((mean_shot > 0 & x_location > 89) | (mean_shot < 0 & x_location < -89), 180 - angle, angle))
         
         pbp_data <- pbp_data |>
-                select(-median_shot)
+                select(-mean_shot)
+        
+        # Add rebound variable
+        
+        pbp_data <- pbp_data |>
+                mutate(is_rebound = if_else((event == "shot" & lag(event) == "shot") & (game_seconds - lag(game_seconds)) < 4, TRUE, FALSE),
+                       .after = is_goal)
         
         return(pbp_data)
         
