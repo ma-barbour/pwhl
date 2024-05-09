@@ -202,13 +202,14 @@ get_pbp_data <- function(game_id) {
                         event == "shot" ~ shooter.id,
                         event == "blocked_shot" ~ blocker.id,
                         event == "goal" ~ scoredBy.id,
-                        event == "penalty" ~ takenBy.id)) 
+                        event == "penalty" ~ takenBy.id,
+                        event == "shootout" ~ shooter.id)) 
         
         # Add goal scorer to shooter_id
         
         pbp_data <- pbp_data |>
                 mutate(shooter_id = case_when(
-                        event == "shot" | event == "blocked_shot" ~ shooter.id,
+                        event == "shot" | event == "blocked_shot" | event == "shootout" ~ shooter.id,
                         event == "goal" ~ scoredBy.id,
                         TRUE ~ NA))
         
@@ -230,13 +231,14 @@ get_pbp_data <- function(game_id) {
                         event == "shot" ~ paste(shooter.firstName, shooter.lastName),
                         event == "blocked_shot" ~ paste(blocker.firstName, blocker.lastName),
                         event == "goal" ~ paste(scoredBy.firstName, scoredBy.lastName),
-                        event == "penalty" ~ paste(takenBy.firstName, takenBy.lastName))) 
+                        event == "penalty" ~ paste(takenBy.firstName, takenBy.lastName),
+                        event == "shootout" ~ paste(shooter.firstName, shooter.lastName),)) 
         
         # Add goal scorers to shooters
         
         pbp_data <- pbp_data |>
                 mutate(shooter = case_when(
-                        event == "shot" | event == "blocked_shot" ~ paste(shooter.firstName, shooter.lastName),
+                        event == "shot" | event == "blocked_shot" | event == "shootout" ~ paste(shooter.firstName, shooter.lastName),
                         event == "goal" ~ paste(scoredBy.firstName, scoredBy.lastName),
                         TRUE ~ NA))
         
@@ -266,6 +268,12 @@ get_pbp_data <- function(game_id) {
                         event == "blocked_shot" & shooterTeamId == away_team_id ~ home_team_id,
                         event == "goal" ~ as.integer(team.id),
                         event == "penalty" ~ as.integer(againstTeam.id)))
+        if(5 %in% pbp_data$period.id) {            
+                
+                pbp_data <- pbp_data |>
+                        mutate(event_team_id = if_else(period.id == 5, shooterTeam.id, event_team_id))
+                
+        }
         
         pbp_data$event_team_id <- as.integer(pbp_data$event_team_id)
         
