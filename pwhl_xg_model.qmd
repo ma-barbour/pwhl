@@ -1,0 +1,2563 @@
+---
+title: "Simple PWHL xG Model"
+format: html
+editor: visual
+---
+
+## Introduction
+
+This document describes an expected goals model for the PWHL.
+
+Important features:
+
+-   the model is a Multivariate Adaptive Regression Splines model (a "MARS model"); and
+
+-   the variables used to predict goals are shot distance, shot angle, and shot rebound status.
+
+That's not many variables, obviously. There isn't much PWHL data available (72 regular season games) so I used only the most important variables for an xG model.
+
+Data for the model were pulled from the PWHL's API (using functions that I posted on [GitHub](https://github.com/ma-barbour/pwhl)). There are anomalies and errors in the data. The steps I took to "fix" the data are set out in painful detail below. Most people will have no interest in those details and can skip them. However, if you plan to use data from the PWHL's API then you need to know that you should not simply use the "raw" data.
+
+## Basic Setup
+
+Load the packages and the raw play-by-play data (this assumes the data are saved in the working directory).
+
+```{r, message=FALSE}
+
+#install.packages("tidymodels")
+#install.packages("readr")
+#install.packages("vip")
+#install.packages("kableExtra")
+
+library(tidymodels)
+library(readr)
+library(vip)
+library(kableExtra)
+
+raw_data <- read_rds("season_one_pbp.rds")
+
+```
+
+## Functions
+
+Set out below are four functions that adjust and augment the raw play-by-play data.
+
+### Adjust Event Location
+
+The x \| y location data from the PWHL's API are on a scale of 600:300 (which does not match the dimensions of a regulation rink).
+
+This function converts the location data to a scale of 200:85 and places center ice at 0,0. After the adjustment, the axes represent distance in feet. This adjustment might not be appropriate in every case; however, it seems to produce reasonable results.
+
+```{r}
+
+adjust_event_location <- function(pbp_data) {
+        
+        pbp_data <- pbp_data |>
+                mutate(x_location = (x_location - 300) * 0.3333,
+                       y_location = (y_location - 150) * 0.2833)
+        
+        return(pbp_data)
+        
+}
+
+```
+
+### Add Shot Distance
+
+This function adds a shot distance variable to the play-by-play data. The distance is measured in feet.
+
+```{r}
+
+add_shot_distance <- function(pbp_data) {
+        
+        find_sides <- pbp_data |>
+                filter(event == "shot") |>
+                group_by(game_id, 
+                         event_team) |>
+                summarize(mean_shot = mean(x_location,
+                                           na.rm = TRUE),
+                          .groups = "drop") 
+        
+        pbp_data <- pbp_data |>
+                left_join(find_sides, 
+                          by = join_by(game_id, 
+                                       event_team))
+        
+        pbp_data <- pbp_data |>
+                mutate(distance = case_when(
+                        mean_shot > 0 & event == "shot" ~ round(abs(sqrt((x_location - 89)^2 + (y_location)^2)), 1),
+                        mean_shot < 0 & event == "shot" ~ round(abs(sqrt((x_location - (-89))^2 + (y_location)^2)), 1)),
+                       .after = y_location)
+        
+        pbp_data <- pbp_data |>
+                select(-mean_shot)
+        
+        return(pbp_data)
+        
+}
+
+```
+
+### Add Shot Angle
+
+This function adds a shot angle variable to the play-by-play data. The angle is measured in degrees from the center of the net.
+
+```{r}
+
+add_shot_angle <- function(pbp_data) {
+        
+        find_sides <- pbp_data |>
+                filter(event == "shot") |>
+                group_by(game_id, 
+                         event_team) |>
+                summarize(mean_shot = mean(x_location,
+                                           na.rm = TRUE),
+                          .groups = "drop") 
+        
+        pbp_data <- pbp_data |>
+                left_join(find_sides, 
+                          by = join_by(game_id, 
+                                       event_team))
+        
+        pbp_data <- pbp_data |>
+                mutate(angle = case_when(
+                        mean_shot > 0 & event == "shot" ~ round(abs(atan((0-y_location) / (89-x_location)) * (180 / pi)), 1),
+                        mean_shot < 0 & event == "shot" ~ round(abs(atan((0-y_location) / (-89-x_location)) * (180 / pi)), 1)),
+                       .after = distance) |>
+                mutate(angle = ifelse((mean_shot > 0 & x_location > 89) | (mean_shot < 0 & x_location < -89), 180 - angle, angle))
+        
+        pbp_data <- pbp_data |>
+                select(-mean_shot)
+        
+        return(pbp_data)
+        
+}
+
+```
+
+### Add Rebound Shots
+
+This function adds a shot rebound logical variable to the play-by-play data. A shot is considered a rebound opportunity if it is taken within 2 seconds of a prior shot.
+
+```{r}
+
+add_rebound <- function(pbp_data) {
+        
+        pbp_data <- pbp_data |>
+                mutate(is_rebound = if_else((event == "shot" & lag(event) == "shot") & (game_seconds - lag(game_seconds)) < 3, TRUE, FALSE),
+                       .after = is_goal)
+        
+        return(pbp_data)
+        
+}
+
+```
+
+## Data Cleaning \| EDA
+
+Adjust the x \| y locations and add shot distance to the play-by-play data - this will be helpful for exploring and "fixing" the data.
+
+```{r}
+
+clean_data <- raw_data |>
+        adjust_event_location() |>
+        add_shot_distance()
+
+```
+
+### Mean x_location
+
+Check for anomalies in the average x_location for shots.
+
+```{r, echo=FALSE}
+
+clean_data |>
+        filter(event == "shot") |>
+        group_by(game_id,
+                 event_team_id) |>
+        summarize(x_location = mean(x_location),
+                  .groups = "drop") |>
+        ggplot() +
+        geom_point(aes(x = game_id,
+                       y = x_location),
+                   size = 3,
+                   colour = "grey28") +
+        geom_hline(yintercept = 0,
+                   colour = "purple2",
+                   linewidth = 2) +
+        scale_x_continuous(breaks = seq(0, 100, by = 10)) +
+        theme_minimal() +
+        labs(title = "Mean x_location For Shots In Each Game") +
+        theme(plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"))
+
+```
+
+There are some odd results here, especially in game_id 3, 9, 23, 35, 38, 40, 43, and 71.
+
+**Warning: this next section is a grind to get through.**
+
+I'll plot the odd results, game-by-game. I'll also plot my "fix" for any potential errors. Generally speaking, I decided how to fix the results by looking for suspicious patterns in the underlying data and by looking at the results posted on the PWHL website. I have not reviewed video of each game. That would be the best way to audit the location data but would also be hugely time consuming.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        filter(event == "shot" & game_id == 3) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations Before Fix: game_id 3",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+Note that the shot locations are suspiciously close to the middle of the ice. I'll return to this issue below. For now, here's my fix: flip the coordinates (both x and y) for periods 2 and 4.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data <- clean_data |>
+        mutate(x_location = case_when(
+                game_id == 3 & (period == 2 | period == 4) ~ x_location * -1,
+                TRUE ~ x_location)) |>
+        mutate(y_location = case_when(
+                game_id == 3 & (period == 2 | period == 4) ~ y_location * -1,
+                TRUE ~ y_location))
+
+clean_data |>
+        filter(event == "shot" & game_id == 3) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations After Fix: game_id 3",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+That looks a little better. Now for game_id 9.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        filter(event == "shot" & game_id == 9) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations Before Fix: game_id 9",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+My fix: flip the coordinates (both x and y) for period 1.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data <- clean_data |>
+        mutate(x_location = case_when(
+                game_id == 9 & period == 1 ~ x_location * -1,
+                TRUE ~ x_location)) |>
+        mutate(y_location = case_when(
+                game_id == 9 & period == 1 ~ y_location * -1,
+                TRUE ~ y_location))
+
+clean_data |>
+        filter(event == "shot" & game_id == 9) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations After Fix: game_id 9",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+That looks a little better (the long-distance goal is an empty net goal). Now for game_id 23.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        filter(event == "shot" & game_id == 23) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations Before Fix: game_id 23",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+This is probably the most suspicious case of the shots being too close to the middle of the ice - I'll come back to this issue below.
+
+My fix: flip the coordinates (both x and y) for periods 1 and 4.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data <- clean_data |>
+        mutate(x_location = case_when(
+                game_id == 23 & (period == 1 | period == 4) ~ x_location * -1,
+                TRUE ~ x_location)) |>
+        mutate(y_location = case_when(
+                game_id == 23 & (period == 1 | period == 4) ~ y_location * -1,
+                TRUE ~ y_location))
+
+clean_data |>
+        filter(event == "shot" & game_id == 23) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations After Fix: game_id 23",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+That looks a little better except for the long-distance goal. I'll return to that later. Now for game_id 35.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        filter(event == "shot" & game_id == 35) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations Before Fix: game_id 35",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+My fix: flip the coordinates (both x and y) for all long-distance shots (which appear in odd clumps in the data).
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data <- clean_data |>
+        mutate(x_location = case_when(
+                game_id == 35 & distance > 100 ~ x_location * -1,
+                TRUE ~ x_location)) |>
+        mutate(y_location = case_when(
+                game_id == 35 & distance > 100 ~ y_location * -1,
+                TRUE ~ y_location))
+
+clean_data |>
+        filter(event == "shot" & game_id == 35) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations After Fix: game_id 35",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+That looks a little better. Now for game_id 38.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        filter(event == "shot" & game_id == 38) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations Before Fix: game_id 38",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+My fix: flip the coordinates (both x and y) for all long-distance shots.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data <- clean_data |>
+        mutate(x_location = case_when(
+                game_id == 38 & distance > 100 ~ x_location * -1,
+                TRUE ~ x_location)) |>
+        mutate(y_location = case_when(
+                game_id == 38 & distance > 100 ~ y_location * -1,
+                TRUE ~ y_location))
+
+clean_data |>
+        filter(event == "shot" & game_id == 38) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations After Fix: game_id 38",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+That looks a little better. Now for game_id 40.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        filter(event == "shot" & game_id == 40) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations Before Fix: game_id 40",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+My fix: flip the coordinates (both x and y) for periods 2 and 4.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data <- clean_data |>
+        mutate(x_location = case_when(
+                game_id == 40 & (period == 2 | period == 4) ~ x_location * -1,
+                TRUE ~ x_location)) |>
+        mutate(y_location = case_when(
+                game_id == 40 & (period == 2 | period == 4) ~ y_location * -1,
+                TRUE ~ y_location))
+
+clean_data |>
+        filter(event == "shot" & game_id == 40) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations After Fix: game_id 40",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+That looks a little better. Now for game_id 43.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        filter(event == "shot" & game_id == 43) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations Before Fix: game_id 43",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+My fix: flip the coordinates (both x and y) for long-distance shots in period 1.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data <- clean_data |>
+        mutate(x_location = case_when(
+                game_id == 43 & period == 1 & distance > 110 ~ x_location * -1,
+                TRUE ~ x_location)) |>
+        mutate(y_location = case_when(
+                game_id == 43 & period == 1 & distance > 110 ~ y_location * -1,
+                TRUE ~ y_location))
+
+clean_data |>
+        filter(event == "shot" & game_id == 43) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations After Fix: game_id 43",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+That looks a little better. Now for game_id 71.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        filter(event == "shot" & game_id == 71) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations Before Fix: game_id 71",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+My fix: flip the coordinates (both x and y) for period 2, plus a subset of shots by OTT in period 3.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data <- clean_data |>
+        mutate(x_location = case_when(
+                game_id == 71 & period == 2 ~ x_location * -1,
+                TRUE ~ x_location)) |>
+        mutate(y_location = case_when(
+                game_id == 71 & period == 2 ~ y_location * -1,
+                TRUE ~ y_location))
+
+clean_data <- clean_data |>
+        mutate(x_location = case_when(
+                game_id == 71 & period == 3 & event_team == "OTT" & distance > 160 ~ x_location * -1,
+                TRUE ~ x_location)) |>
+        mutate(y_location = case_when(
+                game_id == 71 & period == 3 & event_team == "OTT" & distance > 160 ~ y_location * -1,
+                TRUE ~ y_location))
+
+clean_data |>
+        filter(event == "shot" & game_id == 71) |>
+        ggplot(aes(x = x_location,
+                   y = y_location)) +
+        geom_point(aes(shape = is_goal,
+                       colour = event_team),
+                   size = 4,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_hline(yintercept = 42,
+                   colour = "transparent") +
+        geom_hline(yintercept = -42,
+                   colour = "transparent") +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations After Fix: game_id 71",
+             shape = "Goal",
+             colour = "Team") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18")) +
+        scale_colour_viridis_d()
+
+```
+
+That looks a little better.
+
+That was painful. How does the mean x_location plot look now?
+
+```{r, echo=FALSE}
+
+clean_data |>
+        filter(event == "shot") |>
+        group_by(game_id,
+                 event_team_id) |>
+        summarize(x_location = mean(x_location),
+                  .groups = "drop") |>
+        ggplot() +
+        geom_point(aes(x = game_id,
+                       y = x_location),
+                   size = 3,
+                   colour = "grey18") +
+        geom_hline(yintercept = 0,
+                   colour = "purple2",
+                   linewidth = 2) +
+        scale_x_continuous(breaks = seq(0, 100, by = 10)) +
+        theme_minimal() +
+        labs(title = "Mean x_location For Shots In Each Game [Fixed]") +
+        theme(plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"))
+
+```
+
+This looks much better but there could be more errors in the data. To find other potential errors, replace the distance data (using the new x \| y locations) and then summarize long-distance shots that are marked as "quality" in the PWHL's data.
+
+```{r, echo=FALSE, warning=FALSE}
+
+clean_data |>
+        select(-distance) |>
+        add_shot_distance() |>
+        filter(event == "shot" & distance > 80 & (shot_quality == "Quality goal" | shot_quality == "Quality on net")) |>
+        group_by(game_id) |>
+        summarize(Errors = n(),
+                  .groups = "drop") |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+There are some potential errors (and data from early in the season seems especially suspicious). I'll flip the coordinates for these shots and then reset the shot distance variable in the clean data.
+
+```{r, echo=FALSE}
+
+clean_data <- clean_data |>
+        select(-distance) |>
+        add_shot_distance() |>
+        mutate(x_location = case_when(
+                event == "shot" & distance > 80 & (shot_quality == "Quality goal" | shot_quality == "Quality on net") ~ x_location * -1,
+                TRUE ~ x_location)) |>
+        mutate(y_location = case_when(
+                event == "shot" & distance > 80 & (shot_quality == "Quality goal" | shot_quality == "Quality on net") ~ y_location * -1,
+                TRUE ~ y_location)) |>
+        select(-distance) |>
+        add_shot_distance()
+        
+```
+
+Repeat the potential errors summary used above.
+
+```{r, echo=FALSE}
+
+clean_data |>
+        filter(event == "shot" & distance > 80 & (shot_quality == "Quality goal" | shot_quality == "Quality on net")) |>
+        group_by(game_id) |>
+        summarize(location_errors = n(),
+                  .groups = "drop") |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+The potential errors no longer appear in the data.
+
+### Max \| Min y_location
+
+Check for anomalies in the y_location data by looking at the maximum and minimum y_location for the shots in each game.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        filter(event == "shot") |>
+        group_by(game_id,
+                 event_team_id) |>
+        summarize(max_y = max(y_location),
+                  min_y = min(y_location),
+                  .groups = "drop") |>
+        ggplot() +
+        geom_point(aes(x = game_id,
+                       y = max_y),
+                   size = 3,
+                   colour = "grey18") +
+        geom_point(aes(x = game_id,
+                       y = min_y),
+                   size = 3,
+                   colour = "grey18") +
+        geom_hline(yintercept = 0,
+                   colour = "purple2",
+                   linewidth = 2) +
+        geom_smooth(aes(x = game_id,
+                        y = max_y),
+                    formula = 'y ~ x',
+                    method = "loess",
+                    se = FALSE, 
+                    linewidth = 2) +
+        geom_smooth(aes(x = game_id,
+                        y = min_y),
+                    formula = 'y ~ x',
+                    method = "loess",
+                    se = FALSE, 
+                    linewidth = 2) +
+        scale_x_continuous(breaks = seq(0, 100, by = 10)) +
+        scale_y_continuous(breaks = seq(-50, 50, by = 10)) +
+        theme_minimal() +
+        labs(title = "Max And Min y_location For Shots In Each Game",
+             subtitle = "Blue Line Shows Trend",
+             y = "Max | Min y_location") +
+        theme(plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "blue"))
+
+```
+
+There are some suspicious results here, especially the first few games of the season (but also look at game_id 23). As noted above, the y_location for some games seems too close to the middle of the ice. The trend line shows the max and min y_location values are narrower at the start of the season.
+
+Any errors in the y_location data will obviously affect the xG model (decreasing the angle and distance of the shots). I'm not going to apply an arbitrary adjustment, and I'm not going to watch video for the most suspicious games. I'll leave the y_location data "as-is" but I definitely have concerns about it.
+
+### Mean Shot Distance
+
+Plot the average shot distance by each team for every game_id as a further check for location errors.
+
+```{r, echo=FALSE}
+
+clean_data |>
+        filter(event == "shot") |>
+        group_by(game_id,
+                 event_team_id) |>
+        summarize(distance = mean(distance),
+                  .groups = "drop") |>
+        ggplot() +
+        geom_point(aes(x = game_id,
+                       y = distance),
+                   size = 3,
+                   alpha = 0.7,
+                   colour = "grey28") +
+        scale_x_continuous(breaks = seq(0, 100, by = 10)) +
+        theme_minimal() +
+        labs(title = "Mean Shot Distance In Each Game") +
+        theme(plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              legend.position = "none") 
+
+```
+
+No massive outliers here. While I expect there are still some errors in the data I've probably caught a good chunk of them.
+
+### Location Of Goals
+
+Plot the location of all goals (excluding empty net goals and penalty shots).
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        mutate(en = if_else(lead(goal_is_en) == TRUE, TRUE, FALSE)) |>
+        filter(is_goal == TRUE & en == FALSE) |>
+        ggplot() +
+        geom_point(aes(x = x_location,
+                       y = y_location,
+                       colour = distance),
+                   size = 4,
+                   alpha = 0.4) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Location Of PWHL Goals",
+             subtitle = "Colour Shows Shot Distance",
+             caption = "Excludes Empty Net Goals And Penalty Shots") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              legend.position = "none",
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18, 
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "grey18"),
+              plot.caption = element_text(size = 10,
+                                          colour = "grey")) +
+        scale_colour_viridis_c()
+
+```
+
+There are two suspicious goals here: one in the neutral zone and one in the defensive zone (the yellow point).
+
+I watched both goals on YouTube. The defensive zone goal was not a long-distance shot. The x_location needs to be flipped for this goal. The neutral zone goal was from long-distance - the puck took a funny bounce off the boards and went in the net when the goalie went out to play it.
+
+I'll fix the defensive zone goal by flipping the x_location and recomputing the distance variable.
+
+```{r, echo=FALSE}
+
+clean_data <- clean_data |>
+        mutate(x_location = if_else(game_id == 23 & is_goal == TRUE & distance > 120, x_location * -1, x_location)) |>
+        select(-distance) |>
+        add_shot_distance()
+
+```
+
+Update the plot to make sure that fix worked.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        mutate(en = if_else(lead(goal_is_en) == TRUE, TRUE, FALSE)) |>
+        filter(is_goal == TRUE & en == FALSE) |>
+        ggplot() +
+        geom_point(aes(x = x_location,
+                       y = y_location,
+                       colour = distance),
+                   size = 4,
+                   alpha = 0.4) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Location Of PWHL Goals",
+             subtitle = "Colour Shows Shot Distance",
+             caption = "Excludes Empty Net Goals And Penalty Shots") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              legend.position = "none",
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "grey18"),
+              plot.caption = element_text(size = 10,
+                                          colour = "grey")) +
+        scale_colour_viridis_c()
+
+
+```
+
+That looks about right.
+
+### Explore Shot Variables
+
+The above plots showed that the distance variable seems to be working OK. Now add the angle and is_rebound variables to the play-by-play data and visualize them.
+
+```{r, echo=FALSE}
+
+clean_data <- clean_data |>
+        add_shot_angle() |>
+        add_rebound()
+
+```
+
+Repeat the above goals plot but show the angle of the shots using colour.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        mutate(en = if_else(lead(goal_is_en) == TRUE, TRUE, FALSE)) |>
+        filter(is_goal == TRUE & en == FALSE) |>
+        ggplot() +
+        geom_point(aes(x = x_location,
+                       y = y_location,
+                       colour = angle),
+                   size = 4,
+                   alpha = 0.5) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Location Of PWHL Goals",
+             subtitle = "Colour Shows Shot Angle",
+             caption = "Excludes Empty Net Goals And Penalty Shots") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              legend.position = "none",
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "grey18"),
+              plot.caption = element_text(size = 10,
+                                          colour = "grey")) +
+        scale_colour_viridis_c()
+
+
+```
+
+The angle variable seems to be working properly with purple in the middle of the ice and a transition to yellow as the angle rotates in either direction.
+
+Now do the same with rebounds.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        mutate(en = if_else(lead(goal_is_en) == TRUE, TRUE, FALSE)) |>
+        filter(is_goal == TRUE & en == FALSE) |>
+        ggplot() +
+        geom_point(aes(x = x_location,
+                       y = y_location,
+                       colour = is_rebound),
+                   size = 4,
+                   alpha = 0.5) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Location Of PWHL Goals",
+             subtitle = "Purple Shows Goals After Rebounds",
+             caption = "Excludes Empty Net Goals And Penalty Shots") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              legend.position = "none",
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "purple4"),
+              plot.caption = element_text(size = 10,
+                                          colour = "grey")) +
+        scale_colour_viridis_d(direction = -1)
+
+```
+
+Most of the rebounds are close to the front of the net which seems right.
+
+#### Rebounds
+
+It's well-known that rebound opportunities have a higher probability of turning into goals and are an important variable in an xG model. Just to confirm that, here's a comparison of shooting percentages for all shots (excluding empty nets and penalty shots) versus shots after a rebound.
+
+```{r, echo=FALSE, warning=FALSE}
+
+clean_data |>
+        mutate(en = if_else(lead(goal_is_en) == TRUE, TRUE, FALSE)) |>
+        mutate(en = if_else(is.na(en), FALSE, en)) |>
+        filter(event == "shot" & en == FALSE) |>
+        summarise(shots = n(),
+                  goals = sum(is_goal == TRUE),
+                  rebounds = sum(is_rebound == TRUE, na.rm = TRUE),
+                  rebound_goals = sum(is_rebound == TRUE & is_goal == TRUE)) |>
+        mutate(rebound_shooting_percentage = 100 * round(rebound_goals / rebounds, 3),
+               regular_shooting_percentage = 100 * round(goals / shots, 3)) |>
+        select(c(5,6)) |>
+        rename("Rebound Shot %" = rebound_shooting_percentage,
+               "Regular Shot %" = regular_shooting_percentage) |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+Rebound opportunities are more likely to turn into goals.
+
+In passing, look at that regular shooting percentage! Goalies in the PWHL have a much higher save % than goalies in the NHL. That's interesting given that PWHL goalies are smaller than NHL goalies (on average). I have a couple of ideas about what might be happening here but I haven't dug into it. It will be interesting to see if this changes going forward. Any change will be relevant to an xG model.
+
+#### Distance
+
+Plot a histogram showing the relationship between shots, goals, and shot distance.
+
+```{r, echo=FALSE}
+
+clean_data |>
+        mutate(en = if_else(lead(goal_is_en) == TRUE, TRUE, FALSE)) |>
+        mutate(en = if_else(is.na(en), FALSE, en)) |>
+        filter(event == "shot" & en == FALSE) |>
+        ggplot() +
+        geom_histogram(aes(x = distance,
+                           fill = is_goal),
+                       binwidth = 5) +
+        labs(title = "Shot Distance Histogram",
+             subtitle = "Goals Are Purple",
+             caption = "Excludes Empty Net Goals And Penalty Shots | Binwidth = 5",
+             x = "Distance",
+             y = "Shot Count") +
+        scale_x_continuous(breaks = seq(0, 200, by = 10)) +
+        theme_minimal() +
+        theme(legend.position = "none",
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "purple4"),
+              plot.caption = element_text(size = 10,
+                                          colour = "grey")) +
+        scale_fill_viridis_d(direction = -1)
+
+```
+
+Show the same data but as proportions.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        mutate(en = if_else(lead(goal_is_en) == TRUE, TRUE, FALSE)) |>
+        mutate(en = if_else(is.na(en), FALSE, en)) |>
+        filter(event == "shot" & en == FALSE) |>
+        ggplot() +
+        geom_histogram(aes(x = distance,
+                           fill = is_goal),
+                       binwidth = 5,
+                       position = "fill") +
+        geom_hline(yintercept = 0.078,
+                   colour = "blue",
+                   linewidth = 0.75) +
+        labs(title = "Goal | Shot Proportions By Distance",
+             subtitle = "Goals Are Purple | Blue Line Shows League Shooting Percentage (7.8%)",
+             caption = "Excludes Empty Net Goals And Penalty Shots | Binwidth = 5",
+             x = "Distance",
+             y = "Proportions") +
+        scale_x_continuous(breaks = seq(0, 200, by = 10)) +
+        theme_minimal() +
+        theme(legend.position = "none",
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "grey18"),
+              plot.caption = element_text(size = 10,
+                                          colour = "grey")) +
+        scale_fill_viridis_d(direction = -1)
+
+```
+
+The xG model will likely benefit from a spline for the distance variable.
+
+#### Angle
+
+Plot the relationship between shots, goals, and shot angle. Remember: the middle of the ice is "0" in these plots.
+
+```{r, echo=FALSE}
+
+clean_data |>
+        mutate(en = if_else(lead(goal_is_en) == TRUE, TRUE, FALSE)) |>
+        mutate(en = if_else(is.na(en), FALSE, en)) |>
+        filter(event == "shot" & en == FALSE) |>
+        ggplot() +
+        geom_histogram(aes(x = angle,
+                           fill = is_goal),
+                       binwidth = 5) +
+        labs(title = "Shot Angle Histogram",
+             subtitle = "Goals Are Purple",
+             caption = "Excludes Empty Net Goals And Penalty Shots | Binwidth = 5",
+             x = "Angle",
+             y = "Shot Count") +
+        scale_x_continuous(breaks = seq(0, 150, by = 10)) +
+        theme_minimal() +
+        theme(legend.position = "none",
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "purple4"),
+              plot.caption = element_text(size = 10,
+                                          colour = "grey")) +
+        scale_fill_viridis_d(direction = -1)
+
+```
+
+Show the same data but as proportions.
+
+```{r, warning=FALSE, echo=FALSE}
+
+clean_data |>
+        mutate(en = if_else(lead(goal_is_en) == TRUE, TRUE, FALSE)) |>
+        mutate(en = if_else(is.na(en), FALSE, en)) |>
+        filter(event == "shot" & en == FALSE) |>
+        ggplot() +
+        geom_histogram(aes(x = angle,
+                           fill = is_goal),
+                       binwidth = 5,
+                       position = "fill") +
+        geom_hline(yintercept = 0.078,
+                   colour = "blue",
+                   linewidth = 0.75) +
+        labs(title = "Goal | Shot Proportions By Angle",
+             subtitle = "Goals Are Purple | Blue Line Shows League Shooting Percentage (7.8%)",
+             caption = "Excludes Empty Net Goals And Penalty Shots | Binwidth = 5",
+             x = "Angle",
+             y = "Proportions") +
+        scale_x_continuous(breaks = seq(0, 150, by = 10)) +
+        theme_minimal() +
+        theme(legend.position = "none",
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "grey18"),
+              plot.caption = element_text(size = 10,
+                                          colour = "grey")) +
+        scale_fill_viridis_d(direction = -1)
+
+```
+
+The xG model will likely benefit from a spline for the angle variable.
+
+There's an issue here when it comes to extreme angles (90+). I'm guessing that many shot attempts from these angles are not recorded as shots. This would increase the proportion of recorded shots that turn into goals. Having noted the issue, I'll ignore it for now.
+
+### Completeness Of Data
+
+There are anomalies in the game_ids - they are not sequential. Here are the number of unique game_ids in the data.
+
+```{r, echo=FALSE}
+
+length(unique(clean_data$game_id)) |>
+        as_tibble() |>
+        rename("Total Games" = value) |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+There were 72 games in the PWHL regular season.
+
+Check the top goal scorers in the data.
+
+```{r, echo=FALSE, warning=FALSE}
+
+clean_data |>
+        filter(event == "goal") |>
+        group_by(event_player_id, event_player) |>
+        summarise(Goals = n(),
+                  .groups = "drop") |>
+        select(-event_player_id) |>
+        rename("Skater" = "event_player") |>
+        arrange(desc(Goals)) |>
+        slice_head(n= 10) |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+These totals match the totals on the PWHL website.
+
+## xG Model
+
+That's it for tidying up the data.
+
+### Prepare Model Data
+
+This step does the following to the cleaned play-by-play data:
+
+-   removes shots on empty nets;
+
+-   filters for the "shot" event; and
+
+-   converts is_goal and is_rebound to a factor.
+
+The model will not make predictions for empty nets or for penalty shots.
+
+Note: there's one shot with NA in the is_rebound variable. I'll assume it should be FALSE and fill the NA.
+
+```{r}
+
+model_data <- clean_data |>
+        mutate(en = if_else(lead(goal_is_en) == TRUE, TRUE, FALSE)) |>
+        mutate(en = if_else(is.na(en), FALSE, en)) |>
+        filter(event == "shot" & en == FALSE) |>
+        mutate(is_rebound = if_else(is.na(is_rebound), FALSE, is_rebound))
+
+model_data$is_goal <- factor(model_data$is_goal, levels = c("TRUE", "FALSE"))
+
+model_data$is_rebound <- as.factor(model_data$is_rebound)
+        
+```
+
+Now split the data (strata = is_goal) for training and testing, then create folds.
+
+```{r}
+
+set.seed(18)
+
+split_data <- initial_split(data = model_data,
+                            strata = is_goal)
+
+training_data <- training(split_data)
+testing_data <- testing(split_data)
+
+data_folds <- vfold_cv(training_data,
+                       v = 10,
+                       repeats = 3,
+                       strata = is_goal)
+
+```
+
+### Explore Models
+
+Three types of models will be explored below: 1) logistic regression; 2) MARS; and 3) XGBoost.
+
+#### Logistic Regression
+
+Fit some logistic regression models using a few different recipes. The steps here are:
+
+-   write various recipes using different variables and processing; and
+
+-   fit models using the recipes.
+
+```{r}
+
+rec_logistic_base <- recipe(is_goal ~ distance +
+                                    angle, 
+                            data = training_data)
+
+rec_logistic_rebound <- recipe(is_goal ~ distance +
+                                       angle +
+                                       is_rebound, 
+                               data = training_data) |>
+        step_dummy(all_nominal_predictors())
+
+rec_logistic_splines <- recipe(is_goal ~ distance +
+                                       angle +
+                                       is_rebound, 
+                               data = training_data) |>
+        step_dummy(all_nominal_predictors()) |>
+        step_ns(angle,
+                deg_free = 2) |>
+        step_ns(distance,
+                deg_free = 3)
+
+rec_logistic_interaction <- recipe(is_goal ~ distance +
+                                           angle +
+                                           is_rebound, 
+                                   data = training_data) |>
+        step_dummy(all_nominal_predictors()) |>
+        step_interact(terms = ~ distance:angle)
+
+rec_logistic_list <- list(base = rec_logistic_base,
+                          rebound = rec_logistic_rebound,
+                          splines = rec_logistic_splines,
+                          interaction = rec_logistic_interaction)
+
+logistic_models <- workflow_set(rec_logistic_list,
+                                list(logistic = logistic_reg())) |>
+        workflow_map("fit_resamples",
+                     seed = 18,
+                     #verbose = TRUE,
+                     resamples = data_folds)
+
+```
+
+The metric used to evaluate all the models is area under the ROC curve, or roc_aur. For this metric, a larger number (closer to 1) is good.
+
+Collect the metrics.
+
+```{r, echo=FALSE}
+
+logistic_metrics <- collect_metrics(logistic_models) |> 
+        filter(.metric == "roc_auc") |> 
+        arrange(desc(mean)) |> 
+        select(wflow_id, 
+               model,
+               .metric,
+               mean,
+               std_err) |>
+        mutate(mean = round(mean, 3),
+               std_err = round(std_err, 5))
+
+logistic_metrics |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+The model with the interaction term (distance:angle) performed the best.
+
+#### MARS
+
+Repeat the same process with some MARS models (excluding the splines recipe).
+
+```{r}
+
+rec_mars_base <- recipe(is_goal ~ distance +
+                                angle, 
+                        data = training_data)
+
+rec_mars_rebound <- recipe(is_goal ~ distance +
+                                   angle +
+                                   is_rebound, 
+                           data = training_data) |>
+        step_dummy(all_nominal_predictors())
+
+rec_mars_interaction <- recipe(is_goal ~ distance +
+                                       angle +
+                                       is_rebound, 
+                               data = training_data) |>
+        step_dummy(all_nominal_predictors()) |>
+        step_interact(terms = ~ distance:angle)
+
+rec_mars_list <- list(base = rec_mars_base,
+                      rebound = rec_mars_rebound,
+                      interaction = rec_mars_interaction)
+
+mars_models <- workflow_set(rec_mars_list,
+                            list(mars = mars(mode = "classification"))) |>
+        workflow_map("fit_resamples",
+                     seed = 18,
+                     #verbose = TRUE,
+                     resamples = data_folds)
+
+```
+
+Collect the metrics.
+
+```{r, echo=FALSE, warning=FALSE}
+
+mars_metrics <- collect_metrics(mars_models) |> 
+        filter(.metric == "roc_auc") |> 
+        arrange(desc(mean)) |> 
+        select(wflow_id, 
+               model,
+               .metric,
+               mean,
+               std_err) |>
+        mutate(mean = round(mean, 3),
+               std_err = round(std_err, 5))
+
+mars_metrics |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+The MARS models did not perform as well as the logistic regression models. The best performing model had three variables (distance, angle, and is_rebound).
+
+#### XGBoost
+
+I'll try XGBoost here because it has the potential to perform well for this task (my NHL xG model is an XGBoost model). I expect the small amount of data to be a problem here, though.
+
+```{r}
+
+rec_xgb_base <- recipe(is_goal ~ distance +
+                               angle, 
+                       data = training_data)
+
+rec_xgb_rebound <- recipe(is_goal ~ distance +
+                                  angle +
+                                  is_rebound, 
+                          data = training_data) |>
+        step_dummy(all_nominal_predictors(),
+                   one_hot = TRUE)
+
+rec_xgb_interaction <- recipe(is_goal ~ distance +
+                                      angle +
+                                      is_rebound, 
+                              data = training_data) |>
+        step_dummy(all_nominal_predictors(),
+                   one_hot = TRUE) |>
+        step_interact(terms = ~ distance:angle)
+
+rec_xgb_list <- list(base = rec_xgb_base,
+                     rebound = rec_xgb_rebound,
+                     interaction = rec_xgb_interaction)
+
+xgb_models <- workflow_set(rec_xgb_list,
+                           list(xgb = boost_tree(mode = "classification"))) |>
+        workflow_map("fit_resamples",
+                     seed = 18,
+                     #verbose = TRUE,
+                     resamples = data_folds)
+
+```
+
+Collect the metrics.
+
+```{r, echo=FALSE, warning=FALSE}
+
+xgb_metrics <- collect_metrics(xgb_models) |> 
+        filter(.metric == "roc_auc") |> 
+        arrange(desc(mean)) |> 
+        select(wflow_id, 
+               model,
+               .metric,
+               mean,
+               std_err) |>
+        mutate(mean = round(mean, 3),
+               std_err = round(std_err, 5))
+
+xgb_metrics |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+The XGBoost model was the worst performer.
+
+#### Metrics Summary
+
+```{r, echo=FALSE, warning=FALSE}
+
+logistic_metrics |>
+        bind_rows(mars_metrics) |>
+        bind_rows(xgb_metrics) |>
+        arrange(desc(mean)) |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+The logistic regression models top the list, with the "interaction" model being the top performer. It should be acknowledged that none of these models has *great* performance.
+
+### Training \| Testing Data
+
+Select the best version of each type of model and fit it using all of the training data. Check results using the testing data.
+
+#### Logistic Regression
+
+```{r, echo=FALSE, warning=FALSE}
+
+workflow() |>
+        add_model(logistic_reg()) |>
+        add_recipe(rec_logistic_interaction) |>
+        fit(data = training_data) |>
+        augment(testing_data) |>
+        roc_auc(truth = is_goal, .pred_TRUE) |>
+        select(-.estimator) |>
+        mutate(model = "logistic",
+               .before = .metric) |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+There was a drop in performance here.
+
+#### MARS
+
+```{r, echo=FALSE, warning=FALSE}
+
+workflow() |>
+        add_model(mars(mode = "classification")) |>
+        add_recipe(rec_mars_rebound) |>
+        fit(data = training_data) |>
+        augment(testing_data) |>
+        roc_auc(truth = is_goal, .pred_TRUE) |>
+        select(-.estimator) |>
+        mutate(model = "mars",
+               .before = .metric) |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+Now the MARS model outperforms the logistic regression model.
+
+#### XGBoost
+
+```{r, echo=FALSE, warning=FALSE}
+
+workflow() |>
+        add_model(boost_tree(mode = "classification")) |>
+        add_recipe(rec_xgb_interaction) |>
+        fit(data = training_data) |>
+        augment(testing_data) |>
+        roc_auc(truth = is_goal, .pred_TRUE) |>
+        select(-.estimator) |>
+        mutate(model = "xgboost",
+               .before = .metric) |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+XGBoost is still the worst performer.
+
+#### Variable Importance
+
+The MARS model was the best performer when given more training data, and a model with splines is probably a decent choice here. I'll go with it.
+
+Plot the importance of each variable in the MARS model.
+
+```{r, echo=FALSE}
+
+workflow() |>
+        add_model(mars(mode = "classification")) |>
+        add_recipe(rec_mars_rebound) |>
+        fit(data = training_data) |>
+        vip() +
+        theme_minimal() +
+        labs(title = "Importance Of Variables In Exploratory MARS Model",
+             subtitle = "Fit With Training Data") +
+        theme(panel.grid.minor.x = element_blank(),
+              panel.grid.major.y = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "grey18"))
+
+```
+
+### Final Fit
+
+#### Fit And Save The Final xG Model
+
+Fit the MARS model using all available data and save the fit model to the working directory.
+
+```{r}
+
+xg_model <- workflow() |>
+        add_model(mars(mode = "classification")) |>
+        add_recipe(rec_mars_rebound) |>
+        fit(data = model_data)
+
+write_rds(xg_model, "pwhl_xg_model.rds")
+
+```
+
+#### Check roc_auc
+
+Check the roc_auc metric for the final model.
+
+```{r, echo=FALSE, warning=FALSE}
+
+xg_model |>
+        augment(model_data) |>
+        roc_auc(truth = is_goal, .pred_TRUE) |>
+        select(-.estimator) |>
+        mutate(model = "mars",
+               .before = .metric) |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+The roc_auc metric improved which is not surprising given that the model was fit using all of the data.
+
+#### Variable Importance
+
+Check the variable importance for the final model.
+
+```{r, echo=FALSE}
+
+xg_model |>
+        vip() +
+        theme_minimal() +
+        labs(title = "Importance Of Variables In Final MARS Model",
+             subtitle = "Fit With All Data") +
+        theme(panel.grid.minor.x = element_blank(),
+              panel.grid.major.y = element_blank(),
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "grey18"))
+
+```
+
+The order of the variables is the same but the level of importance changed a little.
+
+#### Explore Results
+
+Remember: the predictions made by this xG model do not include empty nets and penalty shots.
+
+```{r, warning=FALSE, echo=FALSE}
+
+xg_model |>
+        augment(model_data) |>
+        ggplot() +
+        geom_point(aes(x = x_location,
+                       y = y_location,
+                       colour = .pred_TRUE,
+                       size = .pred_TRUE),
+                   alpha = 0.3) +
+        geom_vline(xintercept = 89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = -89,
+                   colour = "red",
+                   alpha = 0.7) +
+        geom_vline(xintercept = 25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = -25,
+                   colour = "blue",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_vline(xintercept = 0,
+                   colour = "red",
+                   linewidth = 2,
+                   alpha = 0.7) +
+        geom_segment(aes(x = 90,
+                         xend = 90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        geom_segment(aes(x = -90,
+                         xend = -90,
+                         y = -3,
+                         yend = 3),
+                     colour = "grey28",
+                     alpha = 0.4,
+                     linewidth = 4) +
+        coord_fixed() +
+        theme_minimal() +
+        labs(title = "Shot Locations With xG Values",
+             subtitle = "High xG Values Are Big And Purple",
+             caption = "Excludes Empty Nets And Penalty Shots") +
+        theme(axis.title = element_blank(),
+              axis.text = element_blank(),
+              panel.grid = element_blank(),
+              legend.position = "none",
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "purple4"),
+              plot.caption = element_text(size = 10,
+                                          colour = "grey")) +
+        scale_colour_viridis_c(direction = -1)
+
+```
+
+I think that looks reasonable. Now look at the distribution of xG values.
+
+```{r, echo=FALSE}
+
+xg_model |>
+        augment(model_data) |>
+        ggplot() +
+        geom_histogram(aes(x = .pred_TRUE,
+                           fill = is_goal),
+                       binwidth = 0.01) +
+        scale_x_continuous(breaks = seq(0, 1, by = 0.05)) +
+        theme_minimal() +
+        labs(title = "Histogram Of xG Values",
+             subtitle = "Goals Are Purple",
+             caption = "Excludes Empty Nets And Penalty Shots | Binwidth = 0.01",
+             y = "Shot Count",
+             x = "xG Value") +
+        theme(legend.position = "none",
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "purple4"),
+              plot.caption = element_text(size = 10,
+                                          colour = "grey")) +
+        scale_fill_viridis_d()
+
+```
+
+Show the same data as proportions.
+
+```{r, echo=FALSE, warning=FALSE}
+
+xg_model |>
+        augment(model_data) |>
+        ggplot() +
+        geom_histogram(aes(x = .pred_TRUE,
+                           fill = is_goal),
+                       binwidth = 0.01,
+                       position = "fill") +
+        scale_x_continuous(breaks = seq(0, 1, by = 0.05)) +
+        theme_minimal() +
+        labs(title = "Goal | Shot Proportions By xG Value",
+             subtitle = "Goals Are Purple",
+             caption = "Excludes Empty Nets And Penalty Shots | Binwidth = 0.01",
+             y = "Proportions",
+             x = "xG Value") +
+        theme(legend.position = "none",
+              plot.title.position = "plot",
+              plot.title = element_text(size = 18,
+                                        colour = "grey18"),
+              plot.subtitle = element_text(size = 14,
+                                           colour = "purple4"),
+              plot.caption = element_text(size = 10,
+                                          colour = "grey")) +
+        scale_fill_viridis_d()
+
+```
+
+The overall trend is good but the results are a little uneven. It would be nice to have more data :)
+
+Now explore some actual predictions. Here are the top 10 xG leaders from season one according to this model.
+
+```{r, echo=FALSE}
+
+xg_model |>
+        augment(model_data) |>
+        group_by(event_player_id, 
+                 event_player,
+                 event_team) |>
+        summarize(xG = round(sum(.pred_TRUE), 1),
+                  .groups = "drop") |>
+        select(-event_player_id) |>
+        rename("Skater" = event_player,
+               "Team" = event_team) |>
+        arrange(desc(xG)) |>
+        slice_head(n = 10) |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+Natalie Spooner really separated from the pack (of course, she had by far the most actual goals as well).
+
+See the cumulative xG for each team according to this model.
+
+```{r, echo=FALSE, warning=FALSE}
+
+xg_model |>
+        augment(model_data) |>
+        group_by(event_team) |>
+        summarize(xG = round(sum(.pred_TRUE), 1),
+                  .groups = "drop") |>
+        rename("Team" = event_team) |>
+        arrange(desc(xG)) |>
+        kbl(align = "c") |>
+        kable_paper("striped", 
+                    full_width = F,
+                    position = "center")
+
+```
+
+That's all,
+
+Mark (18 Skaters)
