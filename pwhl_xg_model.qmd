@@ -2,6 +2,7 @@
 title: "Simple PWHL xG Model"
 format: html
 editor: visual
+embed-resources: true
 ---
 
 ## Introduction
@@ -16,7 +17,7 @@ Important features:
 
 That's not many variables, obviously. There isn't much PWHL data available (72 regular season games) so I used only the most important variables for an xG model.
 
-Data for the model were pulled from the PWHL's API (using functions that I posted on [GitHub](https://github.com/ma-barbour/pwhl)). There are anomalies and errors in the data. The steps I took to "fix" the data are set out in painful detail below. Most people will have no interest in those details and can skip them. However, if you plan to use data from the PWHL's API then you need to know that you should not simply use the "raw" data.
+Data for the model were pulled from the PWHL's API (using functions that I posted on [GitHub](https://github.com/ma-barbour/pwhl)). There are anomalies and errors in the data. The steps I took to "fix" the data are set out in painful detail below. Most people will have no interest in those details and can skip them. However, if you plan to use data from the PWHL's API then you must be aware of the issues with the "raw" data.
 
 ## Basic Setup
 
@@ -46,7 +47,7 @@ Set out below are four functions that adjust and augment the raw play-by-play da
 
 The x \| y location data from the PWHL's API are on a scale of 600:300 (which does not match the dimensions of a regulation rink).
 
-This function converts the location data to a scale of 200:85 and places center ice at 0,0. After the adjustment, the axes represent distance in feet. This adjustment might not be appropriate in every case; however, it seems to produce reasonable results.
+This function converts the location data to a scale of 200:85 and places center ice at 0,0. After the conversion the axes represent distance in feet. This adjustment might not be appropriate in every case; however, it seems to produce reasonable results.
 
 ```{r}
 
@@ -198,7 +199,7 @@ There are some odd results here, especially in game_id 3, 9, 23, 35, 38, 40, 43,
 
 **Warning: this next section is a grind to get through.**
 
-I'll plot the odd results, game-by-game. I'll also plot my "fix" for any potential errors. Generally speaking, I decided how to fix the results by looking for suspicious patterns in the underlying data and by looking at the results posted on the PWHL website. I have not reviewed video of each game. That would be the best way to audit the location data but would also be hugely time consuming.
+I'll plot the suspicious results, game-by-game. I'll also plot my "fix" for any potential errors. Generally speaking, I decided how to fix the results by looking for suspicious patterns in the underlying data and by looking at the results posted on the PWHL website. I have not reviewed video of each game. That would be the best way to audit the location data but would also be hugely time consuming.
 
 ```{r, warning=FALSE, echo=FALSE}
 
@@ -2063,7 +2064,7 @@ logistic_models <- workflow_set(rec_logistic_list,
 
 ```
 
-The metric used to evaluate all the models is area under the ROC curve, or roc_aur. For this metric, a larger number (closer to 1) is good.
+The metric used to evaluate all the potential models in this document is area under the ROC curve, or roc_auc. For this metric, a larger number (closer to 1) is good.
 
 Collect the metrics.
 
@@ -2229,7 +2230,7 @@ logistic_metrics |>
 
 ```
 
-The logistic regression models top the list, with the "interaction" model being the top performer. It should be acknowledged that none of these models has *great* performance.
+The logistic regression models top the list, with the "interaction" recipe performing the best. It should be acknowledged that none of these models has *great* performance.
 
 ### Training \| Testing Data
 
@@ -2517,7 +2518,7 @@ The overall trend is good but the results are a little uneven. It would be nice 
 
 Now explore some actual predictions. Here are the top 10 xG leaders from season one according to this model.
 
-```{r, echo=FALSE}
+```{r, echo=FALSE, warning=FALSE}
 
 xg_model |>
         augment(model_data) |>
@@ -2525,6 +2526,7 @@ xg_model |>
                  event_player,
                  event_team) |>
         summarize(xG = round(sum(.pred_TRUE), 1),
+                  Goals = sum(is_goal == TRUE),
                   .groups = "drop") |>
         select(-event_player_id) |>
         rename("Skater" = event_player,
@@ -2538,7 +2540,7 @@ xg_model |>
 
 ```
 
-Natalie Spooner really separated from the pack (of course, she had by far the most actual goals as well).
+Natalie Spooner really separated from the pack (and she had by far the most actual goals as well).
 
 See the cumulative xG for each team according to this model.
 
@@ -2561,3 +2563,74 @@ xg_model |>
 That's all,
 
 Mark (18 Skaters)
+
+## Post Script - Twitter Plot
+
+```{r, echo=FALSE}
+
+library(ggimage)
+library(forcats)
+
+team_logos <- tibble(Team = c("BOS", "MIN", "MTL", "NY", "OTT", "TOR"),
+                     url = c("https://assets.leaguestat.com/pwhl/logos/50x50/1.png",
+                             "https://assets.leaguestat.com/pwhl/logos/50x50/2.png",
+                             "https://assets.leaguestat.com/pwhl/logos/50x50/3.png",
+                             "https://assets.leaguestat.com/pwhl/logos/50x50/4.png",
+                             "https://assets.leaguestat.com/pwhl/logos/50x50/5.png",
+                             "https://assets.leaguestat.com/pwhl/logos/50x50/6.png"))
+
+xg_model |>
+        augment(model_data) |>
+        group_by(event_player_id, 
+                 event_player,
+                 event_team) |>
+        summarize(xG = round(sum(.pred_TRUE), 1),
+                  Goals = sum(is_goal == TRUE),
+                  .groups = "drop") |>
+        rename("Skater" = event_player,
+               "Team" = event_team) |>
+        arrange(desc(xG)) |>
+        slice_head(n = 10) |>
+        left_join(team_logos, by = "Team") |>
+        mutate(index = row_number(),
+               Skater = as.factor(Skater)) |>
+        ggplot() +
+        geom_col(aes(x = xG,
+                     y = fct_reorder(Skater, xG),
+                     fill = xG)) +
+        geom_text(aes(x = xG - 0.8,
+                      y = fct_reorder(Skater, xG),
+                      label = format(xG, digits = 3)),
+                  colour = "grey97",
+                  fontface = "bold",
+                  size = 5) +
+        geom_image(aes(x = 0,
+                       y = fct_reorder(Skater, xG),
+                       image = url),
+                   size = 0.1) +
+        geom_text(aes(x = 1.5,
+                      y = fct_reorder(Skater, xG),
+                      label = paste0("Goals: ", Goals)),
+                  colour = "grey88",
+                  fontface = "bold",
+                  size = 3) +
+        labs(title = "PWHL xG Leaders (Season 1)",
+             caption = "Excludes Empty Nets And Penalty Shots\nData By 18 Skaters (xG Model on GitHub: https://github.com/ma-barbour/pwhl)",
+             x = "Expected Goals") +
+        theme_minimal() +
+        theme(plot.title.position = "plot",
+              plot.title = element_text(size = 22,
+                                        colour = "grey22",
+                                        face = "bold"),
+              plot.caption = element_text(colour = "grey"),
+              axis.title.y = element_blank(),
+              axis.title.x = element_text( size = 10,
+                                           colour = "grey60"),
+              panel.grid = element_blank(),
+              axis.text.y = element_text(size = 15,
+                                         face = "bold"),
+              axis.text.x = element_text(size = 8,
+                                         colour = "grey60"),
+              legend.position = "none") 
+
+```
