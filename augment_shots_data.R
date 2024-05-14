@@ -167,4 +167,8 @@ augmented_data |>
         select(-event_player_id) |>
         arrange(desc(xg))
 
+# Save augment function
+
+write_rds(augment_shots, "augment_shots_function.rds")
+
 
