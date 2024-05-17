@@ -1,0 +1,121 @@
+---
+title: "Get Game Logs Function"
+format: html
+editor: visual
+---
+
+## Introduction
+
+This document provides a function for getting the game logs of a specified skater for a specified season. **The function does not return all of the data available through the PWHL's API**. You can take this function and modify it to fit your own needs.
+
+This function does not work for goalies.
+
+\[THIS FUNCTION HAS NOT BEEN TESTED FOR ALL SKATERS\]
+
+## Basic Setup
+
+```{r}
+
+#install.packages("tidyverse")
+#install.packages("jsonlite")
+#install.packages("httr")
+
+library(tidyverse)
+library(jsonlite)
+library(httr)
+
+```
+
+## Function: Get Game Logs \[Skaters\]
+
+This function gets the game logs of a specified player_id (integer) for a specified season_id (integer; the 2023-2024 season_id = 1). The data are pulled from the PWHL's API.
+
+A preview of the data returned by the function is provided below under the heading "Example Data".
+
+Here's the function. It includes explanatory comments (accompanied by a hashtag "\#").
+
+```{r}
+
+get_game_logs_skaters <- function(player_id, season_id) {
+        
+        # Get the raw data
+        
+        url <- paste0("https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=player&player_id=", player_id ,"&season_id=", season_id ,"&site_id=2&key=694cfeed58c932ee&client_code=pwhl&league_id=&lang=en&statsType=standard&callback=angular.callbacks._4")
+        
+        raw_data <- GET(url) |>
+                content("text",
+                        encoding = "UTF-8") %>%
+                sub("angular.callbacks._4(", "", ., fixed = TRUE) %>%
+                sub(")$", "", .) |>
+                fromJSON(flatten = TRUE)
+        
+        # Extract the game logs
+        
+        game_logs <- raw_data[["gameByGame"]][["sections"]][[1]][["data"]][[1]] |>
+                tibble()
+        
+        # Convert time-on-ice to seconds
+        
+        game_logs <- game_logs |>
+                separate_wider_delim(cols = row.ice_time_minutes_seconds,
+                                     delim = ":",
+                                     names = c("min", "sec"))
+        game_logs$min <- as.numeric(game_logs$min)
+        game_logs$sec <- as.numeric(game_logs$sec)
+        
+        game_logs <- game_logs |>
+                mutate(toi_seconds = (min * 60) + sec)
+        
+        # Tidy and select the data
+        
+        game_logs <- game_logs|>
+                mutate(player_id = as.integer(player_id),
+                       player = paste(raw_data[["info"]][["firstName"]], raw_data[["info"]][["lastName"]]),
+                       game_id = as.integer(prop.game.gameLink),
+                       date = as_date(row.date_played),
+                       goals = as.integer(row.goals),
+                       assists = as.integer(row.assists),
+                       shots = as.integer(row.shots),
+                       hits = as.integer(row.hits),
+                       pim = as.integer(row.penalty_minutes))
+        
+        game_logs <- game_logs |>
+                select(player_id,
+                       player,
+                       game_id,
+                       date,
+                       toi_seconds,
+                       goals,
+                       assists,
+                       shots,
+                       hits,
+                       pim)
+        
+        return(game_logs)
+        
+}
+
+```
+
+### Example Data
+
+```{r}
+
+example_data <- get_game_logs_skaters(100, 1)
+
+example_data |>
+        str()
+
+```
+
+```{r}
+
+example_data |>
+        summarise(goals = sum(goals),
+                  assists = sum(assists),
+                  shots = sum(shots),
+                  hits = sum(hits)) |>
+        mutate(points = goals + assists,
+               .after = assists)
+
+```
