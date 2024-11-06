@@ -1,0 +1,101 @@
+---
+title: "League Management"
+format: html
+editor: visual
+---
+
+## Basic Setup
+
+```{r}
+
+setwd("~/18_skaters/r_studio/pwhl/fantasy_league")
+
+library(tidyverse)
+library(jsonlite)
+library(httr)
+library(googledrive)
+library(googlesheets4)
+
+```
+
+## Team URLs
+
+```{r}
+
+teams <- c("Boston", 
+           "Minnesota", 
+           "Montréal", 
+           "New York", 
+           "Ottawa", 
+           "Toronto")  
+
+logo_urls <- c("https://assets.leaguestat.com/pwhl/logos/1_4.png",
+               "https://assets.leaguestat.com/pwhl/logos/2_4.png",
+               "https://assets.leaguestat.com/pwhl/logos/3_4.png",
+               "https://assets.leaguestat.com/pwhl/logos/4_4.png",
+               "https://assets.leaguestat.com/pwhl/logos/5_4.png",
+               "https://assets.leaguestat.com/pwhl/logos/6_4.png")
+
+team_logos <- tibble(team = teams,
+                     logo_url = logo_urls)
+
+```
+
+## Get Schedule
+
+### Pull Schedule
+
+```{r}
+
+schedule_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=schedule&team=-1&season=5&location=homeaway&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&conference_id=-1&division_id=-1&lang=en&callback=angular.callbacks._5"
+
+schedule_data_raw <- GET(schedule_url) |>
+        content("text",
+                encoding = "UTF-8") %>%
+        sub("angular.callbacks._5(", "", ., fixed = TRUE) %>%
+        sub(")$", "", .) |>
+        fromJSON() |>
+        tibble() 
+
+schedule_data <- schedule_data_raw[[1]][[1]] |>
+        select(data) |>
+        unnest_longer(1) 
+
+schedule <- tibble(game_id = as.integer(schedule_data$data$row$game_id),
+                   date = schedule_data$data$row$date_with_day,
+                   home_team = schedule_data$data$row$home_team_city,
+                   away_team = schedule_data$data$row$visiting_team_city)
+
+schedule$date <- substring(schedule$date, first = 6)
+
+schedule <- schedule |>
+        mutate(date = if_else(startsWith(date, "Nov") | startsWith(date, "Dec") , paste0(date, ", 2024"), paste0(date, ", 2025")))
+
+schedule$date <- as_date(parse_date_time(schedule$date, "mdy"))
+
+```
+
+### Add Fantasy Weeks
+
+```{r}
+
+fantasy_schedule <- schedule |>
+        mutate(start_week = as_date(cut(date, breaks = "week")))
+
+fantasy_schedule <- fantasy_schedule |>
+        mutate(week_number = cut.Date(fantasy_schedule$start_week, breaks = "1 week", labels = FALSE),
+               .before = start_week) 
+
+```
+
+### Add Team Logos
+
+```{r}
+
+fantasy_schedule <- fantasy_schedule |>
+        left_join(team_logos, join_by(home_team == team)) |>
+        rename(home_team_logo = logo_url) |>
+        left_join(team_logos, join_by(away_team == team)) |>
+        rename(away_team_logo = logo_url)
+
+```

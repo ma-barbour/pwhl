@@ -1,0 +1,584 @@
+---
+title: "Team Sheet"
+format: html
+editor: visual
+---
+
+## Basic Setup
+
+```{r}
+
+setwd("~/18_skaters/r_studio/pwhl/fantasy_league")
+
+library(tidyverse)
+library(jsonlite)
+library(httr)
+library(googledrive)
+library(googlesheets4)
+
+```
+
+## Team URLs
+
+```{r}
+
+teams <- c("Boston", 
+           "Minnesota", 
+           "Montréal", 
+           "New York", 
+           "Ottawa", 
+           "Toronto")  
+
+logo_urls <- c("https://assets.leaguestat.com/pwhl/logos/1_4.png",
+               "https://assets.leaguestat.com/pwhl/logos/2_4.png",
+               "https://assets.leaguestat.com/pwhl/logos/3_4.png",
+               "https://assets.leaguestat.com/pwhl/logos/4_4.png",
+               "https://assets.leaguestat.com/pwhl/logos/5_4.png",
+               "https://assets.leaguestat.com/pwhl/logos/6_4.png")
+
+team_logos <- tibble(team = teams,
+                     logo_url = logo_urls)
+
+```
+
+## Roster URLs
+
+### Preseason
+
+```{r}
+
+boston_call_back <- "angular.callbacks._8("
+
+minnesota_call_back <- "angular.callbacks._3(" 
+
+montreal_call_back <- "angular.callbacks._4("
+
+new_york_call_back <- "angular.callbacks._4("
+
+ottawa_call_back <- "angular.callbacks._4(" 
+
+toronto_call_back <- "angular.callbacks._4("
+
+```
+
+```{r}
+
+boston_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=1&season_id=4&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._8"
+
+minnesota_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=2&season_id=4&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._3"
+
+montreal_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=3&season_id=4&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._4"
+
+new_york_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=4&season_id=4&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._4"
+
+ottawa_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=5&season_id=4&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._4"
+
+toronto_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=6&season_id=4&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._4"
+
+```
+
+### Regular Season
+
+```{r, eval=FALSE}
+
+boston_call_back <- "angular.callbacks._4("
+
+minnesota_call_back <- "angular.callbacks._8(" 
+
+montreal_call_back <- "angular.callbacks._8("
+
+new_york_call_back <- "angular.callbacks._4(" 
+
+ottawa_call_back <- "angular.callbacks._8(" 
+
+toronto_call_back <- "angular.callbacks._8("
+
+```
+
+```{r, eval=FALSE}
+
+boston_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=1&season_id=5&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._4"
+
+minnesota_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=2&season_id=5&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._8"
+
+montreal_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=3&season_id=5&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._8"
+
+new_york_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=4&season_id=5&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._4"
+
+ottawa_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=5&season_id=5&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._8"
+
+toronto_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=6&season_id=5&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._8"
+
+```
+
+## Get PWHL Rosters
+
+### Boston
+
+```{r}
+
+boston_data <- GET(boston_roster_url) |>
+        content("text",
+                encoding = "UTF-8") %>%
+        sub(boston_call_back, "", ., fixed = TRUE) %>%
+        sub(")$", "", .) |>
+        fromJSON()
+
+forwards <- tibble(
+        player_id = boston_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["player_id"]],
+        player = boston_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["name"]],
+        number = boston_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["tp_jersey_number"]],
+        position = boston_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["position"]])
+
+defense <- tibble(
+        player_id = boston_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["player_id"]],
+        player = boston_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["name"]],
+        number = boston_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["tp_jersey_number"]],
+        position = boston_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["position"]])
+
+goalies <- tibble(
+        player_id = boston_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["player_id"]],
+        player = boston_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["name"]],
+        number = boston_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["tp_jersey_number"]],
+        position = boston_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["position"]])
+
+boston_roster <- bind_rows(forwards,
+                           defense,
+                           goalies)
+
+boston_roster$player_id <- as.integer(boston_roster$player_id )
+boston_roster$number <- as.integer(boston_roster$number)
+
+boston_roster <- boston_roster |>
+        mutate(team = boston_data[["teamName"]], .before = "number")
+
+```
+
+### Minnesota
+
+```{r}
+
+minnesota_data <- GET(minnesota_roster_url)|>
+        content("text",
+                encoding = "UTF-8") %>%
+        sub(minnesota_call_back, "", ., fixed = TRUE) %>%
+        sub(")$", "", .) |>
+        fromJSON()
+
+forwards <- tibble(
+        player_id = minnesota_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["player_id"]],
+        player = minnesota_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["name"]],
+        number = minnesota_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["tp_jersey_number"]],
+        position = minnesota_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["position"]])
+
+defense <- tibble(
+        player_id = minnesota_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["player_id"]],
+        player = minnesota_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["name"]],
+        number = minnesota_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["tp_jersey_number"]],
+        position = minnesota_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["position"]])
+
+goalies <- tibble(
+        player_id = minnesota_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["player_id"]],
+        player = minnesota_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["name"]],
+        number = minnesota_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["tp_jersey_number"]],
+        position = minnesota_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["position"]])
+
+minnesota_roster <- bind_rows(forwards,
+                              defense,
+                              goalies)
+
+minnesota_roster$player_id <- as.integer(minnesota_roster$player_id)
+minnesota_roster$number <- as.integer(minnesota_roster$number)
+
+minnesota_roster <- minnesota_roster |>
+        mutate(team = minnesota_data[["teamName"]], .before = "number")
+
+```
+
+### Montreal
+
+```{r}
+
+montreal_data <- GET(montreal_roster_url) |>
+        content("text",
+                encoding = "UTF-8") %>%
+        sub(montreal_call_back, "", ., fixed = TRUE) %>%
+        sub(")$", "", .) |>
+        fromJSON()
+
+forwards <- tibble(
+        player_id = montreal_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["player_id"]],
+        player = montreal_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["name"]],
+        number = montreal_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["tp_jersey_number"]],
+        position = montreal_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["position"]])
+
+defense <- tibble(
+        player_id = montreal_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["player_id"]],
+        player = montreal_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["name"]],
+        number = montreal_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["tp_jersey_number"]],
+        position = montreal_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["position"]])
+
+goalies <- tibble(
+        player_id = montreal_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["player_id"]],
+        player = montreal_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["name"]],
+        number = montreal_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["tp_jersey_number"]],
+        position = montreal_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["position"]])
+
+montreal_roster <- bind_rows(forwards,
+                             defense,
+                             goalies)
+
+montreal_roster$player_id <- as.integer(montreal_roster$player_id)
+montreal_roster$number <- as.integer(montreal_roster$number)
+
+montreal_roster <- montreal_roster |>
+        mutate(team = montreal_data[["teamName"]], .before = "number")
+
+```
+
+### New York
+
+```{r}
+
+new_york_data <- GET(new_york_roster_url)|>
+        content("text",
+                encoding = "UTF-8") %>%
+        sub(new_york_call_back, "", ., fixed = TRUE) %>%
+        sub(")$", "", .) |>
+        fromJSON()
+
+forwards <- tibble(
+        player_id = new_york_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["player_id"]],
+        player = new_york_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["name"]],
+        number = new_york_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["tp_jersey_number"]],
+        position = new_york_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["position"]])
+
+defense <- tibble(
+        player_id = new_york_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["player_id"]],
+        player = new_york_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["name"]],
+        number = new_york_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["tp_jersey_number"]],
+        position = new_york_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["position"]])
+
+goalies <- tibble(
+        player_id = new_york_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["player_id"]],
+        player = new_york_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["name"]],
+        number = new_york_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["tp_jersey_number"]],
+        position = new_york_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["position"]])
+
+new_york_roster <- bind_rows(forwards,
+                             defense,
+                             goalies)
+
+new_york_roster$player_id <- as.integer(new_york_roster$player_id)
+new_york_roster$number <- as.integer(new_york_roster$number)
+
+new_york_roster <- new_york_roster |>
+        mutate(team = new_york_data[["teamName"]], .before = "number")
+
+```
+
+### Ottawa
+
+```{r}
+
+ottawa_data <- GET(ottawa_roster_url) |>
+        content("text",
+                encoding = "UTF-8") %>%
+        sub(ottawa_call_back, "", ., fixed = TRUE) %>%
+        sub(")$", "", .) |>
+        fromJSON()
+
+forwards <- tibble(
+        player_id = ottawa_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["player_id"]],
+        player = ottawa_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["name"]],
+        number = ottawa_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["tp_jersey_number"]],
+        position = ottawa_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["position"]])
+
+defense <- tibble(
+        player_id = ottawa_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["player_id"]],
+        player = ottawa_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["name"]],
+        number = ottawa_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["tp_jersey_number"]],
+        position = ottawa_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["position"]])
+
+goalies <- tibble(
+        player_id = ottawa_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["player_id"]],
+        player = ottawa_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["name"]],
+        number = ottawa_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["tp_jersey_number"]],
+        position = ottawa_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["position"]])
+
+ottawa_roster <- bind_rows(forwards,
+                           defense,
+                           goalies)
+
+ottawa_roster$player_id <- as.integer(ottawa_roster$player_id)
+ottawa_roster$number <- as.integer(ottawa_roster$number)
+
+ottawa_roster <- ottawa_roster |>
+        mutate(team = ottawa_data[["teamName"]], .before = "number")
+
+```
+
+### Toronto
+
+```{r}
+
+toronto_data <- GET(toronto_roster_url) |>
+        content("text",
+                encoding = "UTF-8") %>%
+        sub(toronto_call_back, "", ., fixed = TRUE) %>%
+        sub(")$", "", .) |>
+        fromJSON()
+
+forwards <- tibble(
+        player_id = toronto_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["player_id"]],
+        player = toronto_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["name"]],
+        number = toronto_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["tp_jersey_number"]],
+        position = toronto_data[["roster"]][["sections"]][[1]][["data"]][[1]][["row"]][["position"]])
+
+defense <- tibble(
+        player_id = toronto_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["player_id"]],
+        player = toronto_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["name"]],
+        number = toronto_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["tp_jersey_number"]],
+        position = toronto_data[["roster"]][["sections"]][[1]][["data"]][[2]][["row"]][["position"]])
+
+goalies <- tibble(
+        player_id = toronto_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["player_id"]],
+        player = toronto_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["name"]],
+        number = toronto_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["tp_jersey_number"]],
+        position = toronto_data[["roster"]][["sections"]][[1]][["data"]][[3]][["row"]][["position"]])
+
+toronto_roster <- bind_rows(forwards,
+                            defense,
+                            goalies)
+
+toronto_roster$player_id <- as.integer(toronto_roster$player_id)
+toronto_roster$number <- as.integer(toronto_roster$number)
+
+toronto_roster <- toronto_roster |>
+        mutate(team = toronto_data[["teamName"]], .before = "number")
+
+```
+
+### League
+
+```{r}
+
+players <- bind_rows(boston_roster,
+                     minnesota_roster,
+                     montreal_roster,
+                     new_york_roster,
+                     ottawa_roster,
+                     toronto_roster)
+
+players <- players |>
+        select(player_id,
+               player,
+               team,
+               position)
+
+players <- players |>
+        mutate(player = paste(player, player_id))
+
+```
+
+## Split Positions
+
+```{r}
+
+boston_f <- players |>
+        filter(team == 'Boston Fleet',
+               position == "F") |>
+        arrange(player)
+
+boston_d <- players |>
+        filter(team == 'Boston Fleet',
+               position == "D") |>
+        arrange(player)
+
+minnesota_f <- players |>
+        filter(team == 'Minnesota Frost',
+               position == "F") |>
+        arrange(player)
+
+minnesota_d <- players |>
+        filter(team == 'Minnesota Frost',
+               position == "D") |>
+        arrange(player)
+
+montreal_f <- players |>
+        filter(team == 'Montréal Victoire',
+               position == "F") |>
+        arrange(player)
+
+montreal_d <- players |>
+        filter(team == 'Montréal Victoire',
+               position == "D") |>
+        arrange(player)
+
+new_york_f <- players |>
+        filter(team == 'New York Sirens',
+               position == "F") |>
+        arrange(player)
+
+new_york_d <- players |>
+        filter(team == 'New York Sirens',
+               position == "D") |>
+        arrange(player)
+
+ottawa_f <- players |>
+        filter(team == 'Ottawa Charge',
+               position == "F") |>
+        arrange(player)
+
+ottawa_d <- players |>
+        filter(team == 'Ottawa Charge',
+               position == "D") |>
+        arrange(player)
+
+toronto_f <- players |>
+        filter(team == 'Toronto Sceptres',
+               position == "F") |>
+        arrange(player)
+
+toronto_d <- players |>
+        filter(team == 'Toronto Sceptres',
+               position == "D") |>
+        arrange(player)
+
+```
+
+## Push Rosters To Master Sheet
+
+```{r}
+
+google_sheet_url_players <- "https://docs.google.com/spreadsheets/d/1OGMbuC5somxvoP0bfEpOVkFzFNJjk_OmiWOu19ILZPo/edit?gid=0#gid=0"
+
+sheet_write(players, 
+            ss = google_sheet_url_players, 
+            sheet = "raw_data")
+
+sheet_write(boston_f,
+            ss = google_sheet_url_players, 
+            sheet = "boston_f")
+
+sheet_write(boston_d,
+            ss = google_sheet_url_players, 
+            sheet = "boston_d")
+
+sheet_write(minnesota_f,
+            ss = google_sheet_url_players, 
+            sheet = "minnesota_f")
+
+sheet_write(minnesota_d,
+            ss = google_sheet_url_players, 
+            sheet = "minnesota_d")
+
+sheet_write(montreal_f,
+            ss = google_sheet_url_players, 
+            sheet = "montreal_f")
+
+sheet_write(montreal_d,
+            ss = google_sheet_url_players, 
+            sheet = "montreal_d")
+
+sheet_write(new_york_f,
+            ss = google_sheet_url_players, 
+            sheet = "new_york_f")
+
+sheet_write(new_york_d,
+            ss = google_sheet_url_players, 
+            sheet = "new_york_d")
+
+sheet_write(ottawa_f,
+            ss = google_sheet_url_players, 
+            sheet = "ottawa_f")
+
+sheet_write(ottawa_d,
+            ss = google_sheet_url_players, 
+            sheet = "ottawa_d")
+
+sheet_write(toronto_f,
+            ss = google_sheet_url_players, 
+            sheet = "toronto_f")
+
+sheet_write(toronto_d,
+            ss = google_sheet_url_players, 
+            sheet = "toronto_d")
+
+```
+
+## Get Schedule
+
+### Pull Schedule
+
+```{r}
+
+
+schedule_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=schedule&team=-1&season=5&location=homeaway&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&conference_id=-1&division_id=-1&lang=en&callback=angular.callbacks._5"
+
+schedule_data_raw <- GET(schedule_url) |>
+        content("text",
+                encoding = "UTF-8") %>%
+        sub("angular.callbacks._5(", "", ., fixed = TRUE) %>%
+        sub(")$", "", .) |>
+        fromJSON() |>
+        tibble() 
+
+schedule_data <- schedule_data_raw[[1]][[1]] |>
+        select(data) |>
+        unnest_longer(1) 
+
+schedule <- tibble(game_id = as.integer(schedule_data$data$row$game_id),
+                   date = schedule_data$data$row$date_with_day,
+                   home_team = schedule_data$data$row$home_team_city,
+                   away_team = schedule_data$data$row$visiting_team_city)
+
+schedule$date <- substring(schedule$date, first = 6)
+
+schedule <- schedule |>
+        mutate(date = if_else(startsWith(date, "Nov") | startsWith(date, "Dec") , paste0(date, ", 2024"), paste0(date, ", 2025")))
+
+schedule$date <- as_date(parse_date_time(schedule$date, "mdy"))
+
+```
+
+### Add Fantasy Weeks
+
+```{r}
+
+fantasy_schedule <- schedule |>
+        mutate(start_week = as_date(cut(date, breaks = "week")))
+
+fantasy_schedule <- fantasy_schedule |>
+        mutate(week_number = cut.Date(fantasy_schedule$start_week, breaks = "1 week", labels = FALSE),
+               .before = start_week) 
+
+```
+
+### Add Team Logos
+
+```{r}
+
+fantasy_schedule <- fantasy_schedule |>
+        left_join(team_logos, join_by(home_team == team)) |>
+        rename(home_team_logo = logo_url) |>
+        left_join(team_logos, join_by(away_team == team)) |>
+        rename(away_team_logo = logo_url)
+
+```
+
+## Push Schedule To Master Sheet
+
+```{r}
+
+sheet_write(fantasy_schedule,
+            ss = google_sheet_url_players, 
+            sheet = "fantasy_schedule")
+
+```
+
+Push all.
+
+```{r}
+
+```
