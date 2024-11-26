@@ -41,6 +41,14 @@ team_logos <- tibble(team = teams,
 
 ```
 
+## PWHL Rosters
+
+```{r}
+
+pwhl_rosters <- read_rds("pwhl_rosters.rds")
+
+```
+
 ## Get Schedule
 
 ### Pull Schedule
@@ -97,5 +105,95 @@ fantasy_schedule <- fantasy_schedule |>
         rename(home_team_logo = logo_url) |>
         left_join(team_logos, join_by(away_team == team)) |>
         rename(away_team_logo = logo_url)
+
+```
+
+## Find Current Week Number
+
+```{r}
+
+current_week_number <- fantasy_schedule |>
+        filter(start_week <= Sys.Date())
+
+current_week_number <- max(current_week_number$week_number)
+
+```
+
+## Pull Rosters For Current Week
+
+### Roster URLs
+
+```{r}
+
+roster_urls <- c("https://docs.google.com/spreadsheets/d/1b9nX7-SxLssLqPIL30NZYUnLJHXuDhcb3ni-BkjQSvM/edit?gid=0#gid=0",
+                 "https://docs.google.com/spreadsheets/d/1u1Z5cquvMlzM51jApvaP1-e4A4FFprOFUwV88G9uj7w/edit?gid=0#gid=0",
+                 "https://docs.google.com/spreadsheets/d/17TqxVfEKZ8kY2Pmpr_IlODhxvOh6QGyVwahnFw18z8E/edit?gid=0#gid=0",
+                 "https://docs.google.com/spreadsheets/d/1Xzv7E26uSCl2FpKva6XdI1LotbKPKL1qo3jMMEHBf-U/edit?gid=0#gid=0",
+                 "https://docs.google.com/spreadsheets/d/1-AIPMpluoIi5AXNYcHCccN51jf6pc6lpsr1Fl0YDvb8/edit?gid=0#gid=0",
+                 "https://docs.google.com/spreadsheets/d/1Rg5h5C0UTBq5Er3rRWmmVSpRtFz2lQOvdsgG6NzoUDU/edit?gid=0#gid=0",
+                 "https://docs.google.com/spreadsheets/d/1PkYGXyV0r0OgMpmaslOu3hc5EfCg7_dKWrmOM9-Z0Bs/edit?gid=0#gid=0",
+                 "https://docs.google.com/spreadsheets/d/1C44Pw_CMT7_znAj8EWG-ea_Xs2pG7i07tj9baVaqr_8/edit?gid=0#gid=0",
+                 "https://docs.google.com/spreadsheets/d/1p-ASD-agjG_02fvo6_2WE5X6e1F9HwwR7RZeoUROJuw/edit?gid=0#gid=0",
+                 "https://docs.google.com/spreadsheets/d/1QK8dCF9lWlTtZstJQKbmKyzLwotzlOYjgpZhrAxm8uw/edit?gid=0#gid=0")
+
+```
+
+### Pull Rosters 
+
+```{r}
+
+current_rosters <- list()
+
+for(i in 1:length(roster_urls)) {
+        
+        roster <- read_sheet(roster_urls[i],
+                             sheet = "upload_table")
+        
+        current_rosters[[i]] <- roster
+        
+}
+
+current_rosters <- current_rosters |>
+        bind_rows() |>
+        mutate(week_number = current_week_number,
+               .before = team_number)
+
+```
+
+## Legal Roster Check
+
+```{r}
+
+current_rosters |>
+        left_join(pwhl_rosters |> select(player, pwhl_team = team),
+                  by = "player") |>
+        group_by(team_number, pwhl_team) |>
+        unique() |>
+        summarise(unique_players = n(),
+                  .groups = "drop") |>
+        filter(unique_players != 7)
+
+```
+
+### Save Rosters
+
+```{r}
+
+if(!file.exists("league_roster_data.rds")) {
+        
+        league_roster_data <- current_rosters
+        
+        write_rds(current_rosters, "league_roster_data.rds")
+        
+} else {
+        
+        league_roster_data <- read_rds("league_roster_data.rds")
+        
+        league_roster_data <- league_roster_data |>
+                bind_rows(current_rosters)
+        
+        write_rds(league_roster_data, "league_roster_data.rds")
+        
+}
 
 ```

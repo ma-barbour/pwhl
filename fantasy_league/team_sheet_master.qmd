@@ -379,6 +379,8 @@ players <- players |>
 players <- players |>
         mutate(player = paste(player, player_id))
 
+write_rds(players, "pwhl_rosters.rds")
+
 ```
 
 ## Split Positions
