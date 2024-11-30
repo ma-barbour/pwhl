@@ -45,7 +45,7 @@ team_logos <- tibble(team = teams,
 
 ### Preseason
 
-```{r}
+```{r, eval=FALSE}
 
 boston_call_back <- "angular.callbacks._8("
 
@@ -61,7 +61,7 @@ toronto_call_back <- "angular.callbacks._4("
 
 ```
 
-```{r}
+```{r, eval=FALSE}
 
 boston_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=1&season_id=4&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._8"
 
@@ -79,7 +79,7 @@ toronto_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=stat
 
 ### Regular Season
 
-```{r, eval=FALSE}
+```{r}
 
 boston_call_back <- "angular.callbacks._4("
 
@@ -95,7 +95,7 @@ toronto_call_back <- "angular.callbacks._8("
 
 ```
 
-```{r, eval=FALSE}
+```{r}
 
 boston_roster_url <- "https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=roster&team_id=1&season_id=5&key=446521baf8c38984&client_code=pwhl&site_id=0&league_id=1&lang=en&callback=angular.callbacks._4"
 

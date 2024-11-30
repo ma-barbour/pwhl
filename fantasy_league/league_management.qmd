@@ -138,7 +138,7 @@ roster_urls <- c("https://docs.google.com/spreadsheets/d/1b9nX7-SxLssLqPIL30NZYU
 
 ```
 
-### Pull Rosters 
+### Pull Rosters
 
 ```{r}
 
