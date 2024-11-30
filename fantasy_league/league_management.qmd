@@ -197,3 +197,14 @@ if(!file.exists("league_roster_data.rds")) {
 }
 
 ```
+
+## Push League Roster Data
+
+```{r}
+
+sheet_write(league_roster_data |>
+                    left_join(pwhl_rosters |> select(player, team) , by = "player"), 
+            ss = "https://docs.google.com/spreadsheets/d/1rbnXunjXuI8KLBKPhIZ7tDvl9pmIoqM9CzjtI6xxCBY/edit?gid=1510400201#gid=1510400201", 
+            sheet = "league_roster_data")
+
+```
