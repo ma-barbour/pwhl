@@ -4,6 +4,10 @@ format: html
 editor: visual
 ---
 
+## Introduction
+
+This code should be run every Monday.
+
 ## Basic Setup
 
 ```{r}
@@ -206,5 +210,154 @@ sheet_write(league_roster_data |>
                     left_join(pwhl_rosters |> select(player, team) , by = "player"), 
             ss = "https://docs.google.com/spreadsheets/d/1rbnXunjXuI8KLBKPhIZ7tDvl9pmIoqM9CzjtI6xxCBY/edit?gid=1510400201#gid=1510400201", 
             sheet = "league_roster_data")
+
+```
+
+## Find Last Week Number
+
+```{r}
+
+last_week_number <- fantasy_schedule |>
+        filter(week_number < current_week_number)
+
+last_week_number <- max(last_week_number$week_number)
+
+```
+
+## Pull Current Scoring Data
+
+### Find game_ids
+
+```{r}
+
+game_ids <- fantasy_schedule |>
+        filter(week_number == last_week_number)
+
+game_ids <- game_ids$game_id
+
+```
+
+### Pull Scoring Data
+
+```{r}
+
+current_scoring <- list()
+
+for(i in 1:length(game_ids)) {
+        
+        loop_data <- GET(paste0("https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=gameSummary&game_id=", game_ids[i], "&key=446521baf8c38984&site_id=0&client_code=pwhl&lang=en&league_id=&callback=angular.callbacks._5")) |>
+                content("text",
+                        encoding = "UTF-8") %>%
+                sub("angular.callbacks._5(", "", ., fixed = TRUE) %>%
+                sub(")$", "", .) |>
+                fromJSON() 
+        
+        loop_data <- loop_data[["periods"]][["goals"]] |>
+                tibble() |>
+                unnest(1) 
+        
+        goals_data <- tibble(first_name = loop_data$scoredBy$firstName,
+                            last_name = loop_data$scoredBy$lastName,
+                            id = loop_data$scoredBy$id)
+        
+        goals_data <- goals_data |>
+                mutate(player = paste(first_name, last_name, id),
+                       goal = 1) |>
+                select(player, goal) 
+        
+        assists_data <- loop_data$assists |>
+                tibble() |>
+                unnest_wider(1) |>
+                select(id, firstName, lastName) |>
+                unnest_wider(id, names_sep = "_") |>
+                unnest_wider(firstName, names_sep = "_") |>
+                unnest_wider(lastName, names_sep = "_") |>
+                filter(id_1 > 0)
+        
+        a1 <- tibble(player = paste(assists_data$firstName_1, assists_data$lastName_1, assists_data$id_1),
+                     assist = 1)
+        
+        a2 <- tibble(player = paste(assists_data$firstName_2, assists_data$lastName_2, assists_data$id_2),
+                     assist = 1)
+        
+        assists_data <- a1 |>
+                bind_rows(a2)
+        
+        combined_data <- goals_data |>
+                bind_rows(assists_data)
+        
+        combined_data[is.na(combined_data)] <- 0
+        
+        current_scoring[[i]] <- combined_data
+        
+}
+
+current_scoring <- current_scoring |> 
+        bind_rows() |>
+        group_by(player) |>
+        summarise(goals = sum(goal),
+                  assists = sum(assist),
+                  .groups = "drop") |>
+        mutate(points = goals + assists) |>
+        arrange(-points, -goals) |>
+        filter(player != "NA NA NA") |>
+        mutate(week_number = last_week_number,
+               .before = player)
+
+```
+
+## Update League Scoring Data
+
+### Save Scoring Data
+
+```{r}
+
+if(!file.exists("league_scoring_data.rds")) {
+        
+        league_scoring_data <- current_scoring
+        
+        write_rds(current_scoring, "league_scoring_data.rds")
+        
+} else {
+        
+        league_scoring_data <- read_rds("league_scoring_data.rds")
+        
+        league_scoring_data <- league_scoring_data |>
+                bind_rows(current_scoring)
+        
+        write_rds(league_scoring_data, "league_scoring_data.rds")
+        
+}
+
+```
+
+## The Whole Thing
+
+### Fantasy Points
+
+```{r}
+
+the_whole_thing <- league_roster_data |>
+        left_join(league_scoring_data, join_by(player, week_number))
+
+the_whole_thing[is.na(the_whole_thing)] <- 0
+
+```
+
+### Save The Whole Thing
+
+```{r}
+
+write_rds(the_whole_thing, "the_whole_thing.rds")
+
+```
+
+## Push The Whole Thing
+
+```{r}
+
+sheet_write(the_whole_thing, 
+            ss = "https://docs.google.com/spreadsheets/d/1rbnXunjXuI8KLBKPhIZ7tDvl9pmIoqM9CzjtI6xxCBY/edit?gid=1510400201#gid=1510400201", 
+            sheet = "the_whole_thing")
 
 ```
