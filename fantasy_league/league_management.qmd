@@ -160,7 +160,8 @@ for(i in 1:length(roster_urls)) {
 current_rosters <- current_rosters |>
         bind_rows() |>
         mutate(week_number = current_week_number,
-               .before = team_number)
+               .before = team_number) |>
+        mutate(player_id = parse_number(gsub("-", "", player)))
 
 ```
 
@@ -207,7 +208,7 @@ if(!file.exists("league_roster_data.rds")) {
 ```{r}
 
 sheet_write(league_roster_data |>
-                    left_join(pwhl_rosters |> select(player, team) , by = "player"), 
+                    left_join(pwhl_rosters |> select(player_id, team) , by = "player_id"), 
             ss = "https://docs.google.com/spreadsheets/d/1rbnXunjXuI8KLBKPhIZ7tDvl9pmIoqM9CzjtI6xxCBY/edit?gid=1510400201#gid=1510400201", 
             sheet = "league_roster_data")
 
@@ -258,12 +259,12 @@ for(i in 1:length(game_ids)) {
         
         goals_data <- tibble(first_name = loop_data$scoredBy$firstName,
                             last_name = loop_data$scoredBy$lastName,
-                            id = loop_data$scoredBy$id)
+                            player_id = loop_data$scoredBy$id)
         
         goals_data <- goals_data |>
-                mutate(player = paste(first_name, last_name, id),
+                mutate(player = paste(first_name, last_name, player_id),
                        goal = 1) |>
-                select(player, goal) 
+                select(player, player_id, goal) 
         
         assists_data <- loop_data$assists |>
                 tibble() |>
@@ -275,9 +276,11 @@ for(i in 1:length(game_ids)) {
                 filter(id_1 > 0)
         
         a1 <- tibble(player = paste(assists_data$firstName_1, assists_data$lastName_1, assists_data$id_1),
+                     player_id = assists_data$id_1,
                      assist = 1)
         
         a2 <- tibble(player = paste(assists_data$firstName_2, assists_data$lastName_2, assists_data$id_2),
+                     player_id = assists_data$id_2,
                      assist = 1)
         
         assists_data <- a1 |>
@@ -294,15 +297,15 @@ for(i in 1:length(game_ids)) {
 
 current_scoring <- current_scoring |> 
         bind_rows() |>
-        group_by(player) |>
+        filter(player_id > 0) |>
+        group_by(player_id) |>
         summarise(goals = sum(goal),
                   assists = sum(assist),
                   .groups = "drop") |>
         mutate(points = goals + assists) |>
         arrange(-points, -goals) |>
-        filter(player != "NA NA NA") |>
         mutate(week_number = last_week_number,
-               .before = player)
+               .before = player_id)
 
 ```
 
@@ -338,7 +341,8 @@ if(!file.exists("league_scoring_data.rds")) {
 ```{r}
 
 the_whole_thing <- league_roster_data |>
-        left_join(league_scoring_data, join_by(player, week_number))
+        filter(week_number != current_week_number) |>
+        left_join(league_scoring_data |> select(-player), join_by(player_id, week_number))
 
 the_whole_thing[is.na(the_whole_thing)] <- 0
 
@@ -356,7 +360,7 @@ write_rds(the_whole_thing, "the_whole_thing.rds")
 
 ```{r}
 
-sheet_write(the_whole_thing, 
+sheet_write(the_whole_thing |> mutate(last_update = Sys.Date()), 
             ss = "https://docs.google.com/spreadsheets/d/1rbnXunjXuI8KLBKPhIZ7tDvl9pmIoqM9CzjtI6xxCBY/edit?gid=1510400201#gid=1510400201", 
             sheet = "the_whole_thing")
 
