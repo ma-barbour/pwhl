@@ -54,6 +54,95 @@ pwhl_rosters <- read_rds("pwhl_rosters.rds")
 
 ```
 
+## Game Logs
+
+### Get Game Logs
+
+```{r}
+
+gl_skaters <- pwhl_rosters |>
+        filter(position != "G")
+
+player_id_gl <- gl_skaters$player_id
+
+player_name_gl <- gl_skaters$player 
+
+game_logs <- list()
+
+for(i in 1:length(player_id_gl)) {
+        
+        print(paste("Getting Game Logs For:", player_name_gl[i]))
+        
+        gl_url <- paste0("https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=player&player_id=", player_id_gl[i], "&season_id=5&site_id=0&key=446521baf8c38984&client_code=pwhl&league_id=&lang=en&statsType=standard&callback=angular.callbacks._4")
+        
+        gl_raw <- GET(gl_url) |>
+                content("text",
+                        encoding = "UTF-8") %>%
+                sub("angular.callbacks._4(", "", ., fixed = TRUE) %>%
+                sub(")$", "", .) |>
+                fromJSON() 
+        
+        loop_data <- gl_raw[["gameByGame"]][["sections"]][[1]] |>
+                tibble() |>
+                select(data) |>
+                unnest(1) |>
+                collapse()
+        
+        loop_data <- tibble(
+                player_id = player_id_gl[i],
+                player = player_name_gl[i], 
+                game_id = loop_data$prop$game$game_id$gameLink,
+                date = as_date(loop_data$row$date_played),
+                game = loop_data$row$game,
+                toi_seconds = loop_data$row$ice_time_minutes_seconds,
+                goals = as.integer(loop_data$row$goals),
+                assists = as.integer(loop_data$row$assists),
+                shots = as.integer(loop_data$row$shots))
+        
+        if (length(loop_data$player_id) > 0) {
+               
+                game_logs[[i]] <- loop_data 
+                
+        }
+        
+}
+
+game_logs <- game_logs |>
+        bind_rows() |>
+        mutate(toi_seconds = ms(toi_seconds)) |>
+        mutate(toi_seconds = period_to_seconds(toi_seconds)) |>
+        mutate(toi_minutes = toi_seconds / 60,
+               .after = toi_seconds) |>
+        arrange(player_id, date) |>
+        drop_na(toi_seconds) |>
+        mutate(points = goals + assists,
+               .before = goals)
+
+game_logs <- game_logs |>
+        left_join(pwhl_rosters |> select(player_id, team), by = "player_id" )
+
+game_logs <- game_logs |>
+        mutate(city = case_when(team == "Boston Fleet" ~ "Boston",
+                                team == "Minnesota Frost" ~ "Minnesota",
+                                team == "Montréal Victoire" ~ "Montréal",
+                                team == "New York Sirens" ~ "New York",
+                                team == "Ottawa Charge" ~ "Ottawa",
+                                team == "Toronto Sceptres" ~ "Toronto")) |>
+        left_join(team_logos, join_by(city == team)) |>
+        mutate(updated = Sys.Date())
+
+```
+
+### Push Game Logs
+
+```{r}
+
+sheet_write(game_logs, 
+            ss = "https://docs.google.com/spreadsheets/d/1rbnXunjXuI8KLBKPhIZ7tDvl9pmIoqM9CzjtI6xxCBY/edit?gid=1510400201#gid=1510400201", 
+            sheet = "game_logs")
+
+```
+
 ## Get Schedule
 
 ### Pull Schedule
@@ -364,69 +453,5 @@ write_rds(the_whole_thing, "the_whole_thing.rds")
 sheet_write(the_whole_thing |> mutate(last_update = Sys.Date()), 
             ss = "https://docs.google.com/spreadsheets/d/1rbnXunjXuI8KLBKPhIZ7tDvl9pmIoqM9CzjtI6xxCBY/edit?gid=1510400201#gid=1510400201", 
             sheet = "the_whole_thing")
-
-```
-
-## Game Logs
-
-```{r}
-
-player_id_gl <- pwhl_rosters$player_id
-
-player_name_gl <- pwhl_rosters$player 
-
-game_logs <- list()
-
-for(i in 1:length(player_id_gl)) {
-        
-        print(paste("Getting Game Logs For:", player_name_gl[i]))
-        
-        gl_url <- paste0("https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=player&player_id=", player_id_gl[i], "&season_id=5&site_id=0&key=446521baf8c38984&client_code=pwhl&league_id=&lang=en&statsType=standard&callback=angular.callbacks._4")
-        
-        gl_raw <- GET(gl_url) |>
-                content("text",
-                        encoding = "UTF-8") %>%
-                sub("angular.callbacks._4(", "", ., fixed = TRUE) %>%
-                sub(")$", "", .) |>
-                fromJSON() 
-        
-        loop_data <- gl_raw[["gameByGame"]][["sections"]][[1]] |>
-                tibble() |>
-                select(data) |>
-                unnest(1) |>
-                collapse()
-        
-        loop_data <- tibble(
-                player_id = player_id_gl[i],
-                player = player_name_gl[i], 
-                game_id = loop_data$prop$game$game_id$gameLink,
-                date = as_date(loop_data$row$date_played),
-                game = loop_data$row$game,
-                toi_seconds = loop_data$row$ice_time_minutes_seconds,
-                goals = as.integer(loop_data$row$goals),
-                assists = as.integer(loop_data$row$assists),
-                shots = as.integer(loop_data$row$shots))
-        
-        if (length(loop_data$player_id) > 0) {
-               
-                game_logs[[i]] <- loop_data 
-                
-        }
-        
-}
-
-game_logs <- game_logs |>
-        bind_rows() |>
-        mutate(toi_seconds = ms(toi_seconds)) |>
-        mutate(toi_seconds = period_to_seconds(toi_seconds)) |>
-        mutate(toi_minutes = toi_seconds / 60,
-               .after = toi_seconds) |>
-        arrange(player_id, date) |>
-        drop_na(toi_seconds) |>
-        mutate(points = goals + assists,
-               .before = goals)
-
-game_logs <- game_logs |>
-        mutate(updated = Sys.Date())
 
 ```
