@@ -20,6 +20,7 @@ library(httr)
 library(googledrive)
 library(googlesheets4)
 library(stringi)
+library(broom)
 
 ```
 
@@ -91,7 +92,7 @@ for(i in 1:length(player_id_gl)) {
         loop_data <- tibble(
                 player_id = player_id_gl[i],
                 player = player_name_gl[i], 
-                game_id = loop_data$prop$game$game_id$gameLink,
+                game_id = loop_data[,1],
                 date = as_date(loop_data$row$date_played),
                 game = loop_data$row$game,
                 toi_seconds = loop_data$row$ice_time_minutes_seconds,
@@ -118,6 +119,9 @@ game_logs <- game_logs |>
         mutate(points = goals + assists,
                .before = goals)
 
+game_logs$game_id <- unlist(game_logs$game_id) |>
+        as.integer()
+
 game_logs <- game_logs |>
         left_join(pwhl_rosters |> select(player_id, team), by = "player_id" )
 
@@ -130,16 +134,6 @@ game_logs <- game_logs |>
                                 team == "Toronto Sceptres" ~ "Toronto")) |>
         left_join(team_logos, join_by(city == team)) |>
         mutate(updated = Sys.Date())
-
-```
-
-### Push Game Logs
-
-```{r}
-
-sheet_write(game_logs, 
-            ss = "https://docs.google.com/spreadsheets/d/1rbnXunjXuI8KLBKPhIZ7tDvl9pmIoqM9CzjtI6xxCBY/edit?gid=1510400201#gid=1510400201", 
-            sheet = "game_logs")
 
 ```
 
@@ -210,6 +204,84 @@ current_week_number <- fantasy_schedule |>
         filter(start_week <= Sys.Date())
 
 current_week_number <- max(current_week_number$week_number)
+
+```
+
+## Add xG To Game Logs
+
+### Load Functions \| Model
+
+```{r}
+
+pbp_function <- readRDS("~/18_skaters/r_studio/pwhl/pbp_function.rds")
+
+xg_model <- readRDS("~/18_skaters/r_studio/pwhl/pwhl_xg_model.rds")
+
+augment_shots_function <- readRDS("~/18_skaters/r_studio/pwhl/augment_shots_function.rds")
+
+```
+
+### Get xG
+
+```{r}
+
+xg_game_ids <- schedule |>
+        filter(date < Sys.Date())
+
+xg_game_ids <- xg_game_ids$game_id
+
+pbp_data <- list()
+
+for(i in 1:length(xg_game_ids)) {
+        
+        loop_data <- pbp_function(xg_game_ids[i]) |>
+        augment_shots_function()
+        
+        pbp_data[[i]] <- loop_data
+        
+}
+
+pbp_data <- pbp_data |>
+        bind_rows()
+
+xg_data <- pbp_data |>
+        filter(xg > 0) |>
+        rename(player_id = shooter_id) |>
+        group_by(game_id, player_id) |>
+        summarise(xg = sum(xg),
+                  .groups = "drop")
+
+quality_sa_data <- pbp_data |>
+        filter(event %in% c("shot", "goal", "blocked_shot")) |>
+        filter(shot_quality %in% c("Quality on net", "Quality goal", "Quality blocked")) |>
+        rename(player_id = shooter_id) |>
+        group_by(game_id, player_id) |>
+        summarise(quality_sa = n(),
+                  .groups = "drop") 
+
+```
+
+### Add xG and Quality Shot Attempts
+
+```{r}
+
+game_logs <- game_logs |>
+        left_join(xg_data, join_by(game_id, player_id )) |>
+        left_join(quality_sa_data, join_by(game_id, player_id))
+
+game_logs$xg[is.na(game_logs$xg)] <- 0
+
+game_logs$quality_sa[is.na(game_logs$quality_sa)] <- 0
+
+```
+
+## Push Game Logs
+
+```{r}
+
+sheet_write(game_logs, 
+            ss = "https://docs.google.com/spreadsheets/d/1rbnXunjXuI8KLBKPhIZ7tDvl9pmIoqM9CzjtI6xxCBY/edit?gid=1510400201#gid=1510400201", 
+            sheet = "game_logs")
 
 ```
 
