@@ -389,12 +389,14 @@ write_rds(players, "pwhl_rosters.rds")
 
 boston_f <- players |>
         filter(team == 'Boston Fleet',
-               position == "F") |>
+               position %in% c("C", "LW", "RW")) |>
+        mutate(position = "F") |>
         arrange(player)
 
 boston_d <- players |>
         filter(team == 'Boston Fleet',
-               position == "D") |>
+               position %in% c("LD", "RD"))|>
+        mutate(position = "D") |>
         arrange(player)
 
 minnesota_f <- players |>
