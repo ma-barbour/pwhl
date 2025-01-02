@@ -385,6 +385,10 @@ last_week_number <- fantasy_schedule |>
 
 last_week_number <- max(last_week_number$week_number)
 
+# Manual override for weeks with no games
+
+#last_week_number <- 2
+
 ```
 
 ## Pull Current Scoring Data
@@ -468,6 +472,10 @@ current_scoring <- current_scoring |>
         arrange(-points, -goals) |>
         mutate(week_number = last_week_number,
                .before = player_id)
+
+current_scoring <- current_scoring |>
+        left_join(pwhl_rosters |> select(player_id, player), by = "player_id") |>
+        select(1:2, 6, 3:5)
 
 ```
 
