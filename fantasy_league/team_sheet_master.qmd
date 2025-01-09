@@ -379,6 +379,9 @@ players <- players |>
 players <- players |>
         mutate(player = paste(player, player_id))
 
+players <- players |>
+        mutate(position = if_else(position %in% c("C", "LW", "RW", "F"), "F", "D"))
+
 write_rds(players, "pwhl_rosters.rds")
 
 ```
@@ -389,14 +392,12 @@ write_rds(players, "pwhl_rosters.rds")
 
 boston_f <- players |>
         filter(team == 'Boston Fleet',
-               position %in% c("C", "LW", "RW")) |>
-        mutate(position = "F") |>
+               position == "F") |>
         arrange(player)
 
 boston_d <- players |>
         filter(team == 'Boston Fleet',
-               position %in% c("LD", "RD"))|>
-        mutate(position = "D") |>
+               position == "D") |>
         arrange(player)
 
 minnesota_f <- players |>
