@@ -277,10 +277,22 @@ game_logs$quality_sa[is.na(game_logs$quality_sa)] <- 0
 
 ## Push Game Logs
 
+#### A&G Fantasy League
+
 ```{r}
 
 sheet_write(game_logs, 
             ss = "https://docs.google.com/spreadsheets/d/1rbnXunjXuI8KLBKPhIZ7tDvl9pmIoqM9CzjtI6xxCBY/edit?gid=1510400201#gid=1510400201", 
+            sheet = "game_logs")
+
+```
+
+#### PWHL Skater Stats
+
+```{r}
+
+sheet_write(game_logs, 
+            ss = "https://docs.google.com/spreadsheets/d/1WkNOM0V43DnXsoqxXenPqLn4L1Du1GPhhzcKnqE6xKA/edit?gid=746772930#gid=746772930", 
             sheet = "game_logs")
 
 ```
