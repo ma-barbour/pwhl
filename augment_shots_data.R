@@ -107,6 +107,7 @@ augment_shots <- function(raw_pbp_data) {
         model_data <- indexed_data |>
                 mutate(en = if_else(lead(goal_is_en) == TRUE, TRUE, FALSE)) |>
                 mutate(en = if_else(is.na(en), FALSE, en)) |>
+                mutate(is_rebound = if_else(is.na(is_rebound), FALSE, is_rebound)) |>
                 filter(event == "shot" & en == FALSE)
 
         model_data$is_goal <- factor(model_data$is_goal, levels = c("TRUE", "FALSE"))
