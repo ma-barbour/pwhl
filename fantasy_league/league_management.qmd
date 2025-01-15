@@ -234,8 +234,10 @@ pbp_data <- list()
 
 for(i in 1:length(xg_game_ids)) {
         
+        print(paste("Getting PBP data for game_id:", xg_game_ids[i]))
+        
         loop_data <- pbp_function(xg_game_ids[i]) |>
-        augment_shots_function()
+                augment_shots_function()
         
         pbp_data[[i]] <- loop_data
         
