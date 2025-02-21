@@ -37,7 +37,7 @@ Here's the function.
 ```{r}
 
 get_pbp_data <- function(game_id) {
-        
+
         # Get basic game data
         
         url_1 <- paste0("https://lscluster.hockeytech.com/feed/index.php?feed=statviewfeed&view=gameSummary&game_id=", game_id ,"&key=694cfeed58c932ee&site_id=2&client_code=pwhl&lang=en&league_id=&callback=angular.callbacks._6")
@@ -196,17 +196,34 @@ get_pbp_data <- function(game_id) {
 
         # Consolidate player_ids across events
         
-        pbp_data <- pbp_data |>
+        if ("hit" %in% unique(pbp_data$event) == TRUE) {
+        
+                pbp_data <- pbp_data |>
+                        mutate(event_player_id = case_when(
+                                event == "faceoff" & homeWin == 1 ~ homePlayer.id,
+                                event == "faceoff" & homeWin == 0 ~ visitingPlayer.id,
+                                event == "hit" ~ player.id,
+                                event == "shot" ~ shooter.id,
+                                event == "blocked_shot" ~ blocker.id,
+                                event == "goal" ~ scoredBy.id,
+                                event == "penalty" ~ takenBy.id,
+                                event == "shootout" ~ shooter.id,
+                                event == "penaltyshot" ~ shooter.id)) 
+                
+        } else {
+                
+                pbp_data <- pbp_data |>
                 mutate(event_player_id = case_when(
                         event == "faceoff" & homeWin == 1 ~ homePlayer.id,
                         event == "faceoff" & homeWin == 0 ~ visitingPlayer.id,
-                        event == "hit" ~ player.id,
                         event == "shot" ~ shooter.id,
                         event == "blocked_shot" ~ blocker.id,
                         event == "goal" ~ scoredBy.id,
                         event == "penalty" ~ takenBy.id,
                         event == "shootout" ~ shooter.id,
-                        event == "penaltyshot" ~ shooter.id)) 
+                        event == "penaltyshot" ~ shooter.id))
+                
+                }
         
         # Add goal scorer to shooter_id
         
@@ -226,17 +243,34 @@ get_pbp_data <- function(game_id) {
         
         # Consolidate player names across events
         
-        pbp_data <- pbp_data |>
-                mutate(event_player = case_when(
-                        event == "faceoff" & homeWin == 1 ~ paste(homePlayer.firstName, homePlayer.lastName),
-                        event == "faceoff" & homeWin == 0 ~ paste(visitingPlayer.firstName, visitingPlayer.lastName),
-                        event == "hit" ~ paste(player.firstName, player.lastName),
-                        event == "shot" ~ paste(shooter.firstName, shooter.lastName),
-                        event == "blocked_shot" ~ paste(blocker.firstName, blocker.lastName),
-                        event == "goal" ~ paste(scoredBy.firstName, scoredBy.lastName),
-                        event == "penalty" ~ paste(takenBy.firstName, takenBy.lastName),
-                        event == "shootout" ~ paste(shooter.firstName, shooter.lastName),
-                        event == "penaltyshot" ~ paste(shooter.firstName, shooter.lastName))) 
+        if ("hit" %in% unique(pbp_data$event) == TRUE) {
+                
+                pbp_data <- pbp_data |>
+                        mutate(event_player = case_when(
+                                event == "faceoff" & homeWin == 1 ~ paste(homePlayer.firstName, homePlayer.lastName),
+                                event == "faceoff" & homeWin == 0 ~ paste(visitingPlayer.firstName, visitingPlayer.lastName),
+                                event == "hit" ~ paste(player.firstName, player.lastName),
+                                event == "shot" ~ paste(shooter.firstName, shooter.lastName),
+                                event == "blocked_shot" ~ paste(blocker.firstName, blocker.lastName),
+                                event == "goal" ~ paste(scoredBy.firstName, scoredBy.lastName),
+                                event == "penalty" ~ paste(takenBy.firstName, takenBy.lastName),
+                                event == "shootout" ~ paste(shooter.firstName, shooter.lastName),
+                                event == "penaltyshot" ~ paste(shooter.firstName, shooter.lastName))) 
+                
+        } else {
+                
+                pbp_data <- pbp_data |>
+                        mutate(event_player = case_when(
+                                event == "faceoff" & homeWin == 1 ~ paste(homePlayer.firstName, homePlayer.lastName),
+                                event == "faceoff" & homeWin == 0 ~ paste(visitingPlayer.firstName, visitingPlayer.lastName),
+                                event == "shot" ~ paste(shooter.firstName, shooter.lastName),
+                                event == "blocked_shot" ~ paste(blocker.firstName, blocker.lastName),
+                                event == "goal" ~ paste(scoredBy.firstName, scoredBy.lastName),
+                                event == "penalty" ~ paste(takenBy.firstName, takenBy.lastName),
+                                event == "shootout" ~ paste(shooter.firstName, shooter.lastName),
+                                event == "penaltyshot" ~ paste(shooter.firstName, shooter.lastName)))
+                
+                }
         
         # Add goal scorers to shooters
         
@@ -266,12 +300,18 @@ get_pbp_data <- function(game_id) {
                 mutate(event_team_id = case_when(
                         event == "faceoff" & homeWin == 1 ~ home_team_id,
                         event == "faceoff" & homeWin == 0 ~ away_team_id,
-                        event == "hit" ~ as.integer(teamId),
                         event == "shot" ~ as.integer(shooterTeamId),
                         event == "blocked_shot" & shooterTeamId == home_team_id ~ away_team_id,
                         event == "blocked_shot" & shooterTeamId == away_team_id ~ home_team_id,
                         event == "goal" ~ as.integer(team.id),
                         event == "penalty" ~ as.integer(againstTeam.id)))
+        
+        if("hit" %in% pbp_data$event) {
+                
+                pbp_data <- pbp_data |>
+                        mutate(event_team_id = if_else(event == "hit", as.integer(teamId), event_team_id))
+                
+        }
         
         if("penaltyshot" %in% pbp_data$event) {
                 
@@ -390,7 +430,7 @@ The function returns a tibble that (usually) has 47 variables. The variables (an
 
 ```{r}
 
-example_data <- get_pbp_data(28) 
+example_data <- get_pbp_data(105) 
 
 example_data |>
         str()
